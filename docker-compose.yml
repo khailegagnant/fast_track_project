@@ -32,6 +32,7 @@ x-airflow-common:
     - ./config:/opt/airflow/config
     - ./src:/opt/airflow/src
     - ./.env:/opt/airflow/.env:ro
+    - ./.ssh:/opt/airflow/.ssh:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
