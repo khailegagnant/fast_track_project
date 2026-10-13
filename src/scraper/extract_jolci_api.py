@@ -1,6 +1,5 @@
-
-
 import os
+import sys
 import json
 import logging
 import time
@@ -11,12 +10,17 @@ from urllib3.util.retry import Retry
 import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
+import argparse
 
 # Load variables from .env
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("f1_ingestion")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("f1_bronze_extractor")
 
 # Circuits don't change much; we pull them globally once to save API calls
 GLOBAL_ENDPOINTS = {
@@ -29,9 +33,7 @@ SEASON_ENDPOINTS = {
     "drivers": "{season}/drivers.json",
     "races": "{season}/races.json",
     "results": "{season}/results.json",
-    "qualifying": "{season}/qualifying.json",
-    "driver_standings": "{season}/driverstandings.json",
-    "constructor_standings": "{season}/constructorstandings.json"
+    "qualifying": "{season}/qualifying.json"
 }
 
 class F1DataExtractor:
@@ -106,51 +108,74 @@ class F1DataExtractor:
         logger.info(f"Extracted {total_records} records from {path}.")
         return merged_data
 
-    def upload_to_s3(self, data: Dict[str, Any], endpoint_name: str, partition: str):
-        """Uploads JSON to S3 using Hive partitioning (e.g., season=2023)"""
-        s3_key = f"{self.s3_prefix}/endpoint={endpoint_name}/season={partition}/data.json"
-        
-        try:
-            payload_bytes = json.dumps(data).encode("utf-8")
-            self.s3_client.put_object(
-                Bucket=self.s3_bucket,
-                Key=s3_key,
-                Body=payload_bytes,
-                ContentType="application/json"
-            )
-            logger.info(f"Successfully landed: s3://{self.s3_bucket}/{s3_key}")
-        except ClientError as e:
-            logger.error(f"S3 Upload Failed for {s3_key}: {e}")
-            raise
+    def upload_to_s3(self, data: dict, endpoint_name: str, partition: str):
+        s3_key = f"{self.s3_prefix}/{endpoint_name}/{partition}/data.json"
+        body = json.dumps(data)
+        byte_size = len(body.encode('utf-8'))
+
+        # Extract record count from MRData payload if available
+        total_records = data.get('MRData', {}).get('total', 'unknown')
+
+        logger.info(
+            f"Uploading to Bronze -> Bucket: '{self.s3_bucket}' | Key: '{s3_key}' | "
+            f"Size: {byte_size / 1024:.2f} KB | Records: {total_records}"
+        )
+
+        self.s3_client.put_object(
+            Bucket=self.s3_bucket,
+            Key=s3_key,
+            Body=body,
+            ContentType='application/json'
+        )
+        logger.info(f"Successfully uploaded: s3://{self.s3_bucket}/{s3_key}")
 
 def main():
-    # Load env variables safely
-    S3_BUCKET = os.getenv("S3_BRONZE_BUCKET", "my-f1-capstone-lake")
-    S3_PREFIX = os.getenv("S3_PREFIX", "bronze/f1")
+    # 1. Parse arguments injected by Airflow BashOperator
+    parser = argparse.ArgumentParser(description="Extract F1 data from Jolpica API")
+    parser.add_argument(
+        '--seasons', 
+        type=str, 
+        default="global,2026", 
+        help="Comma-separated list of seasons to extract (e.g., 'global,2025,2026')"
+    )
+    args = parser.parse_args()
+
+    # Convert "global,2026" into a clean Python list: ['global', '2026']
+    target_partitions = [s.strip().lower() for s in args.seasons.split(",")]
     
-    # Parse the comma-separated seasons list
-    seasons_str = os.getenv("F1_SEASONS", "2022,2023,2024,2025,2026")
-    seasons = [s.strip() for s in seasons_str.split(",")]
+    # Separate the 'global' flag from the actual numerical years
+    run_global = "global" in target_partitions
+    year_seasons = [s for s in target_partitions if s != "global"]
 
-    extractor = F1DataExtractor(s3_bucket=S3_BUCKET, s3_prefix=S3_PREFIX)
+    # 2. Load env variables safely for S3 with the explicit fallback to your actual bucket
+    S3_BUCKET = os.getenv("S3_BRONZE_BUCKET", "khaint17-fast-track-capstone-project-data-bucket")
+    S3_BRONZE_PREFIX = os.getenv("S3_BRONZE_PREFIX", "bronze/f1") 
 
-    # 1. Fetch Global Endpoints
-    logger.info("=== FETCHING GLOBAL DATA ===")
-    for name, path in GLOBAL_ENDPOINTS.items():
-        data = extractor.fetch_endpoint(path)
-        if data:
-            extractor.upload_to_s3(data, endpoint_name=name, partition="global")
+    extractor = F1DataExtractor(s3_bucket=S3_BUCKET, s3_prefix=S3_BRONZE_PREFIX)
 
-    # 2. Fetch Season-Specific Endpoints
-    logger.info(f"=== FETCHING SEASON DATA: {seasons} ===")
-    for season in seasons:
-        logger.info(f"--- Processing Season {season} ---")
-        for name, path_template in SEASON_ENDPOINTS.items():
-            path = path_template.format(season=season)
+    # 3. Fetch Global Endpoints (Only if requested by Airflow)
+    if run_global:
+        logger.info("=== FETCHING GLOBAL DATA ===")
+        for name, path in GLOBAL_ENDPOINTS.items():
             data = extractor.fetch_endpoint(path)
             if data:
-                extractor.upload_to_s3(data, endpoint_name=name, partition=season)
-                
+                extractor.upload_to_s3(data, endpoint_name=name, partition="global")
+    else:
+        logger.info("=== SKIPPING GLOBAL DATA (Not requested in args) ===")
+
+    # 4. Fetch Season-Specific Endpoints (Only for requested years)
+    if year_seasons:
+        logger.info(f"=== FETCHING SEASON DATA: {year_seasons} ===")
+        for season in year_seasons:
+            logger.info(f"--- Processing Season {season} ---")
+            for name, path_template in SEASON_ENDPOINTS.items():
+                path = path_template.format(season=season)
+                data = extractor.fetch_endpoint(path)
+                if data:
+                    extractor.upload_to_s3(data, endpoint_name=name, partition=season)
+    else:
+        logger.info("=== NO SEASON DATA REQUESTED ===")
+            
     logger.info("All Bronze extraction completed successfully.")
 
 if __name__ == "__main__":

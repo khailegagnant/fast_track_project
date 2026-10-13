@@ -23,6 +23,8 @@ x-airflow-common:
     AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
     AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
     AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+    S3_BRONZE_BUCKET: ${S3_BRONZE_BUCKET}
+    S3_SILVER_BUCKET: ${S3_SILVER_BUCKET}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs

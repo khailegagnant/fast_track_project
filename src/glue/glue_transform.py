@@ -1,9 +1,17 @@
 import sys
+import logging
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql.functions import col, concat_ws, explode_outer, to_date, to_timestamp
+
+# ==========================================
+# LOGGING SETUP
+# ==========================================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("glue_silver_transformer")
+
 # ==========================================
 # 1. PARSING FUNCTIONS
 # ==========================================
@@ -18,36 +26,17 @@ def parse_circuits(df):
         col("circuit.Location.long").cast("float").alias("longitude")
     )
 
-# Add parse_drivers, parse_results, etc. here as we build them
 def parse_constructors(df):
-    """
-    Parses the Bronze constructors JSON payload.
-    Flattens the 'Constructors' array into individual rows.
-    """
-    exploded_df = df.select(
-        explode_outer(col("MRData.ConstructorTable.Constructors")).alias("constructor")
-    )
-    
-    flattened_df = exploded_df.select(
+    exploded_df = df.select(explode_outer(col("MRData.ConstructorTable.Constructors")).alias("constructor"))
+    return exploded_df.select(
         col("constructor.constructorId").alias("constructor_id"),
         col("constructor.name").alias("name"),
         col("constructor.nationality").alias("nationality")
     )
-    
-    return flattened_df
-
-
 
 def parse_drivers(df):
-    """
-    Parses the Bronze drivers JSON payload.
-    Flattens the 'Drivers' array and extracts driver profile fields.
-    """
-    exploded_df = df.select(
-        explode_outer(col("MRData.DriverTable.Drivers")).alias("driver")
-    )
-    
-    flattened_df = exploded_df.select(
+    exploded_df = df.select(explode_outer(col("MRData.DriverTable.Drivers")).alias("driver"))
+    return exploded_df.select(
         col("driver.driverId").alias("driver_id"),
         col("driver.permanentNumber").cast("int").alias("permanent_number"),
         col("driver.code").alias("driver_code"),
@@ -56,57 +45,28 @@ def parse_drivers(df):
         col("driver.dateOfBirth").cast("date").alias("date_of_birth"),
         col("driver.nationality").alias("nationality")
     )
-    
-    return flattened_df
-
 
 def parse_races(df):
-    """
-    Parses the Bronze races JSON payload.
-    Flattens the 'Races' array and extracts race calendar metadata.
-    Combines date and time into a unified UTC timestamp.
-    """
-    exploded_df = df.select(
-        explode_outer(col("MRData.RaceTable.Races")).alias("race")
-    )
-    
-    flattened_df = exploded_df.select(
+    exploded_df = df.select(explode_outer(col("MRData.RaceTable.Races")).alias("race"))
+    return exploded_df.select(
         col("race.season").cast("int").alias("season"),
         col("race.round").cast("int").alias("round"),
         col("race.raceName").alias("race_name"),
         col("race.Circuit.circuitId").alias("circuit_id"),
         to_date(col("race.date")).alias("race_date"),
         col("race.time").alias("race_time"),
-        to_timestamp(
-            concat_ws(" ", col("race.date"), col("race.time")), 
-            "yyyy-MM-dd HH:mm:ss'Z'"
-        ).alias("race_timestamp_utc"),
+        to_timestamp(concat_ws(" ", col("race.date"), col("race.time")), "yyyy-MM-dd HH:mm:ss'Z'").alias("race_timestamp_utc"),
         col("race.url").alias("race_url")
     )
-    
-    return flattened_df
-
 
 def parse_qualifying(df):
-    """
-    Parses the Bronze qualifying JSON payload.
-    This requires a double-explode: first flattening the 'Races' array, 
-    then flattening the 'QualifyingResults' array inside each race.
-    """
-    # 1. Explode the Races array (One row per race)
-    races_df = df.select(
-        explode_outer(col("MRData.RaceTable.Races")).alias("race")
-    )
-    
-    # 2. Explode the QualifyingResults array (One row per driver per race)
+    races_df = df.select(explode_outer(col("MRData.RaceTable.Races")).alias("race"))
     qual_df = races_df.select(
         col("race.season").cast("int").alias("season"),
         col("race.round").cast("int").alias("round"),
         explode_outer(col("race.QualifyingResults")).alias("qual_result")
     )
-    
-    # 3. Extract the final columns for the Silver layer
-    flattened_df = qual_df.select(
+    return qual_df.select(
         col("season"),
         col("round"),
         col("qual_result.Driver.driverId").alias("driver_id"),
@@ -116,30 +76,15 @@ def parse_qualifying(df):
         col("qual_result.Q2").alias("q2_time_str"),
         col("qual_result.Q3").alias("q3_time_str")
     )
-    
-    return flattened_df
-
 
 def parse_results(df):
-    """
-    Parses the Bronze race results JSON payload.
-    Requires a double-explode: first flattening the 'Races' array, 
-    then flattening the 'Results' array inside each race.
-    """
-    # 1. Explode the Races array (One row per race)
-    races_df = df.select(
-        explode_outer(col("MRData.RaceTable.Races")).alias("race")
-    )
-    
-    # 2. Explode the Results array (One row per driver per race)
+    races_df = df.select(explode_outer(col("MRData.RaceTable.Races")).alias("race"))
     results_df = races_df.select(
         col("race.season").cast("int").alias("season"),
         col("race.round").cast("int").alias("round"),
         explode_outer(col("race.Results")).alias("result")
     )
-    
-    # 3. Extract the final columns for the Silver layer
-    flattened_df = results_df.select(
+    return results_df.select(
         col("season"),
         col("round"),
         col("result.Driver.driverId").alias("driver_id"),
@@ -154,35 +99,37 @@ def parse_results(df):
         col("result.FastestLap.rank").cast("int").alias("fastest_lap_rank"),
         col("result.FastestLap.Time.time").alias("fastest_lap_time_str")
     )
-    
-    return flattened_df
+
 # ==========================================
-# 2. ROUTING DICTIONARY
+# 2. ROUTING DICTIONARIES
 # ==========================================
-PARSERS = {
-    "circuits": parse_circuits,
+# Split parsers to ensure we don't look for seasonal data in the global run (and vice versa)
+GLOBAL_PARSERS = {
+    "circuits": parse_circuits
+}
+
+SEASON_PARSERS = {
     "constructors": parse_constructors,
     "drivers": parse_drivers,
     "races": parse_races,
     "qualifying": parse_qualifying,
-    "results": parse_results,
-    # "driver_standings": parse_driver_standings,
-    # "constructor_standings": parse_constructor_standings
+    "results": parse_results
 }
 
 # ==========================================
 # 3. MAIN EXECUTION
 # ==========================================
 def main():
-    # Capture arguments injected by Terraform / Airflow
+    # 1. Catch the variables passed from your .env via Airflow
     args = getResolvedOptions(sys.argv, [
         'JOB_NAME', 
         'bronze_bucket', 
         'silver_bucket',
-        'run_season' # e.g., '2023' or 'global'
+        'run_season',
+        'bronze_prefix',
+        'silver_prefix'
     ])
 
-    # Initialize Glue Context
     sc = SparkContext()
     glueContext = GlueContext(sc)
     spark = glueContext.spark_session
@@ -192,32 +139,50 @@ def main():
     bronze_bucket = args['bronze_bucket']
     silver_bucket = args['silver_bucket']
     season = args['run_season']
+    
+    # Strip any stray slashes to prevent double slashes in the S3 URI
+    bronze_prefix = args['bronze_prefix'].strip('/')
+    silver_prefix = args['silver_prefix'].strip('/')
 
-    # Process each registered endpoint
-    for endpoint, parser_func in PARSERS.items():
-        print(f"Starting transformation for {endpoint} (Season: {season})")
+    logger.info(f"=== STARTING GLUE JOB RUN FOR SEASON: {season} ===")
+    target_parsers = GLOBAL_PARSERS if season == "global" else SEASON_PARSERS
+
+    for endpoint, parser_func in target_parsers.items():
+        logger.info(f"--- Processing {endpoint} ---")
         
-        # Read from Bronze
-        input_path = f"s3://{bronze_bucket}/bronze/f1/endpoint={endpoint}/season={season}/"
+        # 2. Build paths dynamically using the .env values
+        input_path = f"s3://{bronze_bucket}/{bronze_prefix}/{endpoint}/{season}/"
+        
         try:
             raw_df = spark.read.option("multiline", "true").json(input_path)
+            input_count = raw_df.count()
+            logger.info(f"[{endpoint}] Read {input_count} raw JSON records from {input_path}")
+
+            if input_count == 0:
+                logger.warning(f"[{endpoint}] Zero records found. Skipping transformation.")
+                continue
             
-            # Apply the specific flattening logic
             flattened_df = parser_func(raw_df)
+            output_count = flattened_df.count()
+            logger.info(f"[{endpoint}] Transformed into {output_count} flattened rows.")
             
-            # Write to Silver (Parquet with Snappy compression)
-            output_path = f"s3://{silver_bucket}/silver/f1/{endpoint}/season={season}/"
+            # 3. Output path uses the silver values from .env
+            output_path = f"s3://{silver_bucket}/{silver_prefix}/{endpoint}/season={season}/"
+            
             flattened_df.write \
                 .mode("overwrite") \
                 .format("parquet") \
                 .option("compression", "snappy") \
                 .save(output_path)
                 
-            print(f"Successfully wrote {endpoint} to Silver layer.")
+            logger.info(f"[{endpoint}] Successfully wrote Parquet to {output_path}")
+
         except Exception as e:
-            print(f"Failed to process {endpoint} at {input_path}: {str(e)}")
+            logger.error(f"[{endpoint}] FATAL ERROR processing {input_path}: {str(e)}")
+            raise e
 
     job.commit()
+    logger.info(f"=== COMPLETED GLUE JOB RUN FOR SEASON: {season} ===")
 
 if __name__ == "__main__":
     main()
