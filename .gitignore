@@ -8,3 +8,18 @@ wheels/
 
 # Virtual environments
 .venv
+load_env.ps1
+
+
+# Terraform files
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+.terraform.lock.hcl
+backend-local.hcl
+backend.tf
+logs/
+ 
+
+
+.env
