@@ -1,0 +1,13 @@
+[project]
+name = "f1_capstone_pipeline"
+version = "0.1.0"
+description = "Data Engineering Capstone: F1 API to Snowflake via AWS S3 and dbt"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "requests",
+    "boto3",
+    "python-dotenv",
+    "dbt-snowflake", 
+    "pytest"
+]
