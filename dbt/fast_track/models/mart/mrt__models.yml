@@ -1,0 +1,1378 @@
+version: 2
+
+models:
+  # ===========================================================================
+  # Dimensions
+  # ===========================================================================
+
+  - name: mrt__dim_circuits
+    description: >
+      Presentation circuit dimension. Adds a display label and a 'lat,long'
+      coordinate pair for mapping tools.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "dim", "circuit"]
+      alias: "MRT__DIM_CIRCUITS"
+    columns:
+      - name: CIRCUIT_KEY
+        description: Surrogate key. Primary key of this dimension.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CIRCUIT_ID
+        description: Ergast circuit slug. Natural key.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CIRCUIT_NAME
+        description: Full circuit name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: LOCALITY
+        description: City or locality hosting the circuit.
+        data_type: VARCHAR
+      - name: COUNTRY
+        description: Country hosting the circuit.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CIRCUIT_LABEL
+        description: Display label, e.g. 'Albert Park Grand Prix Circuit (Melbourne)'.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: GEO_COORDINATES
+        description: >
+          'latitude,longitude' pair, or NULL when either coordinate is
+          missing or was rejected as out of range in silver.
+        data_type: VARCHAR
+      - name: LATITUDE
+        description: Circuit latitude in decimal degrees.
+        data_type: FLOAT
+      - name: LONGITUDE
+        description: Circuit longitude in decimal degrees.
+        data_type: FLOAT
+
+  - name: mrt__dim_constructors
+    description: Presentation constructor dimension, one row per constructor.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "dim", "constructor"]
+      alias: "MRT__DIM_CONSTRUCTORS"
+    columns:
+      - name: CONSTRUCTOR_KEY
+        description: Surrogate key. Primary key of this dimension.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CONSTRUCTOR_ID
+        description: Ergast constructor slug. Natural key.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CONSTRUCTOR_NAME
+        description: Constructor display name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_NATIONALITY
+        description: Constructor nationality.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_LABEL
+        description: Display label, e.g. 'Red Bull (Austrian)'.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+
+  - name: mrt__dim_drivers
+    description: >
+      Presentation driver dimension with a broadcast-style label and the
+      driver's current age.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "dim", "driver"]
+      alias: "MRT__DIM_DRIVERS"
+    columns:
+      - name: DRIVER_KEY
+        description: Surrogate key. Primary key of this dimension.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: DRIVER_ID
+        description: Ergast driver slug. Natural key.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: DRIVER_CODE
+        description: Three-letter broadcast abbreviation.
+        data_type: VARCHAR
+      - name: GIVEN_NAME
+        description: Driver first name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: FAMILY_NAME
+        description: Driver surname.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_FULL_NAME
+        description: Canonical full name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_NATIONALITY
+        description: >
+          Driver nationality. NULL for reserve and FP1-only drivers.
+        data_type: VARCHAR
+        data_tests:
+          - not_null:
+              arguments: {}
+              config:
+                severity: warn
+      - name: DRIVER_LABEL
+        description: Display label, e.g. 'Max Verstappen (VER)'.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: PERMANENT_NUMBER
+        description: Permanent car number. Not unique across drivers.
+        data_type: NUMBER
+      - name: DRIVER_AGE_YEARS
+        description: >
+          Driver age in whole years as of the dbt run date. Recomputed on
+          every run, so it drifts with wall-clock time by design.
+        data_type: NUMBER
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 15
+                max_value: 100
+      - name: DATE_OF_BIRTH
+        description: >
+          Driver date of birth. NULL for reserve and FP1-only drivers.
+        data_type: DATE
+        data_tests:
+          - not_null:
+              arguments: {}
+              config:
+                severity: warn
+
+  - name: mrt__dim_races
+    description: >
+      Presentation race dimension, denormalised with circuit attributes so
+      consumers can filter by country or circuit without a second join.
+      Grain is SEASON + ROUND.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "dim", "race"]
+      alias: "MRT__DIM_RACES"
+    columns:
+      - name: RACE_KEY
+        description: Surrogate key. Primary key of this dimension.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CIRCUIT_KEY
+        description: FK to mrt__dim_circuits.CIRCUIT_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_circuits')
+                field: CIRCUIT_KEY
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round number within the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: CIRCUIT_ID
+        description: Natural key of the hosting circuit.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: RACE_NAME
+        description: Official Grand Prix name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CIRCUIT_NAME
+        description: Denormalised circuit name.
+        data_type: VARCHAR
+      - name: LOCALITY
+        description: Denormalised circuit locality.
+        data_type: VARCHAR
+      - name: COUNTRY
+        description: Denormalised circuit country.
+        data_type: VARCHAR
+      - name: RACE_LABEL
+        description: Display label, e.g. '2022 R01 Bahrain Grand Prix'.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: RACE_URL
+        description: Wikipedia URL for the race.
+        data_type: VARCHAR
+      - name: ROUNDS_IN_SEASON
+        description: Total number of rounds scheduled in this season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: IS_SEASON_OPENER
+        description: True for round 1 of the season.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_SEASON_FINALE
+        description: True for the final round of the season.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: RACE_DATE
+        description: Local race date.
+        data_type: DATE
+        data_tests:
+          - not_null
+      - name: RACE_STARTED_AT
+        description: Race start timestamp in UTC.
+        data_type: TIMESTAMP_NTZ
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+
+  # ===========================================================================
+  # Transaction facts
+  # ===========================================================================
+
+  - name: mrt__fct_race_results
+    description: >
+      Consumption-ready race-result fact, grain SEASON + ROUND + DRIVER_ID.
+      Adds within-race analytics (gap to winner, fastest-lap gap, field size,
+      percentage of race distance completed) on top of the cleaned silver
+      fact.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "fct", "result"]
+      alias: "MRT__FCT_RACE_RESULTS"
+    columns:
+      - name: RACE_RESULT_KEY
+        description: Surrogate key. Primary key, protects the fact grain.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: RACE_KEY
+        description: FK to mrt__dim_races.RACE_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_races')
+                field: RACE_KEY
+      - name: DRIVER_KEY
+        description: FK to mrt__dim_drivers.DRIVER_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_drivers')
+                field: DRIVER_KEY
+      - name: CONSTRUCTOR_KEY
+        description: FK to mrt__dim_constructors.CONSTRUCTOR_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_constructors')
+                field: CONSTRUCTOR_KEY
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round number within the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: Natural key of the driver.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_ID
+        description: Natural key of the constructor.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: POSITION_TEXT
+        description: Ergast position text.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: STATUS
+        description: Raw finishing status.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: FINISH_STATUS_CATEGORY
+        description: Reportable grouping of STATUS.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - FINISHED
+                  - LAPPED
+                  - DISQUALIFIED
+                  - ACCIDENT
+                  - MECHANICAL_OR_OTHER
+      - name: STARTING_GRID_POSITION
+        description: Grid slot, NULL for a pit-lane start.
+        data_type: NUMBER
+      - name: FINISH_POSITION
+        description: Raw final position, populated even when unclassified.
+        data_type: NUMBER
+      - name: CLASSIFIED_POSITION
+        description: Final position for classified finishers only.
+        data_type: NUMBER
+      - name: POINTS_SCORED
+        description: Championship points awarded.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: LAPS_COMPLETED
+        description: Laps completed.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: RACE_TIME_MILLIS
+        description: Total race time in ms, NULL for non-finishers.
+        data_type: NUMBER
+      - name: FASTEST_LAP_RANK
+        description: Rank of this driver's fastest lap within the race.
+        data_type: NUMBER
+      - name: FASTEST_LAP_TIME_SECONDS
+        description: Fastest lap in seconds.
+        data_type: NUMBER
+      - name: POSITIONS_GAINED
+        description: Grid position minus classified position.
+        data_type: NUMBER
+      - name: FIELD_SIZE
+        description: Number of entries classified in this race.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: RACE_DISTANCE_LAPS
+        description: Winner's lap count, used as the race distance.
+        data_type: NUMBER
+      - name: GAP_TO_WINNER_MILLIS
+        description: >
+          Race time minus the winner's race time. NULL unless both this
+          driver and the winner were classified with a recorded time.
+        data_type: NUMBER
+      - name: FASTEST_LAP_GAP_SECONDS
+        description: This driver's fastest lap minus the race's fastest lap.
+        data_type: NUMBER
+      - name: PCT_RACE_DISTANCE_COMPLETED
+        description: Laps completed as a percentage of the race distance.
+        data_type: NUMBER
+      - name: IS_CLASSIFIED
+        description: True for a classified finish.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_PIT_LANE_START
+        description: True when started from the pit lane.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_RACE_WINNER
+        description: True when classified first.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_PODIUM_FINISH
+        description: True when classified in the top three.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_POINTS_FINISH
+        description: True when at least one point was scored.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_FASTEST_LAP
+        description: True when the driver set the race's fastest lap.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+              - DRIVER_ID
+
+  - name: mrt__fct_qualifying_results
+    description: >
+      Consumption-ready qualifying fact, grain SEASON + ROUND + DRIVER_ID.
+      Adds gap to pole, percentage off pole, and gap to teammate.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "fct", "qualifying"]
+      alias: "MRT__FCT_QUALIFYING_RESULTS"
+    columns:
+      - name: QUALIFYING_KEY
+        description: Surrogate key. Primary key, protects the fact grain.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: RACE_KEY
+        description: FK to mrt__dim_races.RACE_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_races')
+                field: RACE_KEY
+      - name: DRIVER_KEY
+        description: FK to mrt__dim_drivers.DRIVER_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_drivers')
+                field: DRIVER_KEY
+      - name: CONSTRUCTOR_KEY
+        description: FK to mrt__dim_constructors.CONSTRUCTOR_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_constructors')
+                field: CONSTRUCTOR_KEY
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round number within the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: Natural key of the driver.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_ID
+        description: Natural key of the constructor.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: FINAL_SEGMENT_REACHED
+        description: Furthest segment in which a time was set.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Q1', 'Q2', 'Q3', 'NO_TIME']
+      - name: QUALIFYING_POSITION
+        description: Final qualifying classification, 1 = pole.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: Q1_TIME_SECONDS
+        description: Q1 lap time in seconds.
+        data_type: NUMBER
+      - name: Q2_TIME_SECONDS
+        description: Q2 lap time in seconds.
+        data_type: NUMBER
+      - name: Q3_TIME_SECONDS
+        description: Q3 lap time in seconds.
+        data_type: NUMBER
+      - name: BEST_QUALIFYING_TIME_SECONDS
+        description: Fastest time across all segments run.
+        data_type: NUMBER
+      - name: SEGMENTS_WITH_A_TIME
+        description: Count of segments with a recorded time (0-3).
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: QUALIFYING_FIELD_SIZE
+        description: Number of drivers in this qualifying session.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: POLE_TIME_SECONDS
+        description: Fastest best-time in the session.
+        data_type: NUMBER
+      - name: GAP_TO_POLE_SECONDS
+        description: Best time minus the session's pole time.
+        data_type: NUMBER
+      - name: PCT_OFF_POLE
+        description: Gap to pole as a percentage of the pole time.
+        data_type: NUMBER
+      - name: GAP_TO_TEAMMATE_SECONDS
+        description: >
+          Best time minus the constructor's best time in the session. NULL
+          when the constructor fielded only one timed car.
+        data_type: NUMBER
+      - name: IS_POLE_POSITION
+        description: True when the driver qualified first.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_TOP_TEN_QUALIFIER
+        description: True when the driver qualified in the top ten.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_NO_TIME_SET
+        description: True when no time was set in any segment.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+              - DRIVER_ID
+
+  # ===========================================================================
+  # Periodic snapshot facts - championship standings
+  # ===========================================================================
+
+  - name: mrt__fct_driver_standings
+    description: >
+      Driver championship standings as a periodic snapshot fact. Grain is
+      SEASON + ROUND + DRIVER_ID, with one row per season entrant per round
+      carrying cumulative state *after* that round. Drivers who miss a round
+      still get a row, with zero round points and unchanged cumulative
+      totals, which is what makes the snapshot dense.
+
+      CHAMPIONSHIP_POSITION implements the full FIA countback: points, then
+      number of 1st places, 2nd places, 3rd places and so on through the
+      field, then number of poles, 2nd places in qualifying, and so on. The
+      position counts are folded into two zero-padded sortable strings
+      (RACE_COUNTBACK_KEY and QUALIFYING_COUNTBACK_KEY) so a DESC sort on
+      them is equivalent to comparing position by position.
+
+      SCOPE: only main-race results are landed upstream, so sprint points are
+      excluded and totals read lower than the official championship tables
+      for seasons that ran sprints (2021 onward).
+    config:
+      materialized: table
+      tags: ["mart", "f1", "fct", "snapshot", "standings", "driver"]
+      alias: "MRT__FCT_DRIVER_STANDINGS"
+    columns:
+      - name: DRIVER_STANDING_KEY
+        description: >
+          Surrogate key over (SEASON, ROUND, DRIVER_ID). Primary key,
+          protects the snapshot grain.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: RACE_KEY
+        description: FK to mrt__dim_races.RACE_KEY - the round snapshotted.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_races')
+                field: RACE_KEY
+      - name: DRIVER_KEY
+        description: FK to mrt__dim_drivers.DRIVER_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_drivers')
+                field: DRIVER_KEY
+      - name: CONSTRUCTOR_KEY
+        description: >
+          FK to mrt__dim_constructors.CONSTRUCTOR_KEY. The driver's most
+          recent constructor as of this round, carried forward across any
+          rounds they missed. For rounds before the driver's season debut it
+          falls back to the first constructor they appear with.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_constructors')
+                field: CONSTRUCTOR_KEY
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round after which this snapshot is taken.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: Natural key of the driver.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_ID
+        description: Natural key of the driver's constructor as of this round.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CHAMPIONSHIP_POSITION
+        description: >
+          Standings position after this round, 1 = championship leader.
+          Ordered by points, then RACE_COUNTBACK_KEY, then
+          QUALIFYING_COUNTBACK_KEY. Positions are only ever shared when two
+          competitors are identical on points and on every finishing and
+          qualifying position - a genuine dead heat.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 50
+      - name: RACE_COUNTBACK_KEY
+        description: >
+          Zero-padded concatenation of this driver's season-to-date count of
+          1st places, 2nd places, 3rd places and so on. Sorting DESC is
+          equivalent to the FIA position-by-position race countback.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: QUALIFYING_COUNTBACK_KEY
+        description: >
+          Same construction as RACE_COUNTBACK_KEY but over qualifying
+          classifications. Applied only when points and the race countback
+          are identical.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: SECOND_PLACES_TO_DATE
+        description: >
+          Cumulative 2nd-place finishes. Exposed because it is the countback
+          tier immediately after wins.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: THIRD_PLACES_TO_DATE
+        description: Cumulative 3rd-place finishes.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: POLE_POSITIONS_TO_DATE
+        description: >
+          Cumulative pole positions. First tier of the qualifying countback.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: POINTS_TO_DATE
+        description: Cumulative championship points after this round.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1000
+      - name: WINS_TO_DATE
+        description: Cumulative race wins after this round.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: PODIUMS_TO_DATE
+        description: Cumulative podium finishes after this round.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: POINTS_FINISHES_TO_DATE
+        description: Cumulative races in which at least one point was scored.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: RETIREMENTS_TO_DATE
+        description: Cumulative races entered but not classified.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: RACES_ENTERED_TO_DATE
+        description: Cumulative race entries after this round.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: BEST_FINISH_TO_DATE
+        description: >
+          Best classified finishing position so far this season. NULL if the
+          driver has not yet been classified in any race.
+        data_type: NUMBER
+      - name: ROUND_POINTS
+        description: Points scored in this round alone.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND_WINS
+        description: Wins in this round alone (0 or 1).
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND_BEST_POSITION
+        description: >
+          Best classified position in this round, NULL if the driver did not
+          race or was not classified.
+        data_type: NUMBER
+      - name: POINTS_BEHIND_LEADER
+        description: >
+          Championship leader's points minus this driver's points. Zero for
+          the leader.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: IS_CHAMPIONSHIP_LEADER
+        description: True when CHAMPIONSHIP_POSITION is 1.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: HAS_RACED_THIS_ROUND
+        description: >
+          False when the driver did not take part in this round but is still
+          carried in the standings.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: SNAPSHOT_DATE
+        description: Race date of the round this snapshot represents.
+        data_type: DATE
+        data_tests:
+          - not_null
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+              - DRIVER_ID
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "POINTS_TO_DATE >= WINS_TO_DATE * {{ var('f1_points_for_win') }}"
+          config:
+            alias: mrt__fct_driver_standings_points_cover_wins
+
+  - name: mrt__fct_constructor_standings
+    description: >
+      Constructor championship standings as a periodic snapshot fact. Grain is
+      SEASON + ROUND + CONSTRUCTOR_ID. Constructor points are the sum of their
+      drivers' points, aggregated per round before the cumulative window is
+      applied. Uses the same full FIA countback as the driver standings, with
+      every car counting towards the constructor's position tallies.
+
+      SCOPE: only main-race results are landed upstream, so sprint points are
+      excluded from these totals.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "fct", "snapshot", "standings", "constructor"]
+      alias: "MRT__FCT_CONSTRUCTOR_STANDINGS"
+    columns:
+      - name: CONSTRUCTOR_STANDING_KEY
+        description: >
+          Surrogate key over (SEASON, ROUND, CONSTRUCTOR_ID). Primary key,
+          protects the snapshot grain.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: RACE_KEY
+        description: FK to mrt__dim_races.RACE_KEY - the round snapshotted.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_races')
+                field: RACE_KEY
+      - name: CONSTRUCTOR_KEY
+        description: FK to mrt__dim_constructors.CONSTRUCTOR_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_constructors')
+                field: CONSTRUCTOR_KEY
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round after which this snapshot is taken.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_ID
+        description: Natural key of the constructor.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CHAMPIONSHIP_POSITION
+        description: >
+          Standings position after this round, 1 = leader. Ordered by points,
+          then RACE_COUNTBACK_KEY, then QUALIFYING_COUNTBACK_KEY.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 30
+      - name: RACE_COUNTBACK_KEY
+        description: >
+          Zero-padded concatenation of the constructor's season-to-date count
+          of 1st places, 2nd places, 3rd places and so on, across both cars.
+          Sorting DESC reproduces the FIA race countback.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: QUALIFYING_COUNTBACK_KEY
+        description: >
+          Same construction over qualifying classifications, applied only
+          when points and the race countback are identical.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: SECOND_PLACES_TO_DATE
+        description: Cumulative 2nd-place finishes across the constructor's cars.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: THIRD_PLACES_TO_DATE
+        description: Cumulative 3rd-place finishes across the constructor's cars.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: POLE_POSITIONS_TO_DATE
+        description: Cumulative pole positions taken by the constructor's cars.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: POINTS_TO_DATE
+        description: Cumulative constructor points after this round.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 2000
+      - name: WINS_TO_DATE
+        description: Cumulative race wins by any of the constructor's cars.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: PODIUMS_TO_DATE
+        description: Cumulative podium finishes across the constructor's cars.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: POINTS_FINISHES_TO_DATE
+        description: Cumulative car entries that scored at least one point.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: RETIREMENTS_TO_DATE
+        description: Cumulative car entries that were not classified.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: CAR_ENTRIES_TO_DATE
+        description: >
+          Cumulative individual car entries. Normally two per round, so this
+          is roughly twice the round count.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: BEST_FINISH_TO_DATE
+        description: Best classified finish by any of the constructor's cars.
+        data_type: NUMBER
+      - name: ROUND_POINTS
+        description: Points scored by the constructor in this round alone.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND_WINS
+        description: Wins in this round alone (0 or 1).
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND_BEST_POSITION
+        description: Best classified position by the constructor in this round.
+        data_type: NUMBER
+      - name: POINTS_BEHIND_LEADER
+        description: Leader's points minus this constructor's points.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: IS_CHAMPIONSHIP_LEADER
+        description: True when CHAMPIONSHIP_POSITION is 1.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: HAS_RACED_THIS_ROUND
+        description: False when the constructor fielded no cars in this round.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: SNAPSHOT_DATE
+        description: Race date of the round this snapshot represents.
+        data_type: DATE
+        data_tests:
+          - not_null
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+              - CONSTRUCTOR_ID
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "POINTS_TO_DATE >= WINS_TO_DATE * {{ var('f1_points_for_win') }}"
+          config:
+            alias: mrt__fct_constructor_standings_points_cover_wins
+
+  # ===========================================================================
+  # Metrics - season aggregates
+  # ===========================================================================
+
+  - name: mrt__agg_driver_season_summary
+    description: >
+      Metrics layer. One row per driver per season. Final championship
+      position and totals are read from the final round's standings snapshot
+      rather than recomputed, so this model can never disagree with
+      mrt__fct_driver_standings.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "agg", "metrics", "driver"]
+      alias: "MRT__AGG_DRIVER_SEASON_SUMMARY"
+    columns:
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: Natural key of the driver.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_KEY
+        description: FK to mrt__dim_drivers.DRIVER_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_drivers')
+                field: DRIVER_KEY
+      - name: CONSTRUCTOR_ID
+        description: Constructor the driver ended the season with.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_KEY
+        description: FK to mrt__dim_constructors.CONSTRUCTOR_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_constructors')
+                field: CONSTRUCTOR_KEY
+      - name: FINAL_CHAMPIONSHIP_POSITION
+        description: Championship position after the final round of the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_POINTS
+        description: Points scored across the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_WINS
+        description: Race wins across the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_PODIUMS
+        description: Podium finishes across the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_POINTS_FINISHES
+        description: Races in which at least one point was scored.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_RETIREMENTS
+        description: Races entered but not classified.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_RACES_ENTERED
+        description: Race entries across the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: BEST_FINISH
+        description: Best classified finishing position of the season.
+        data_type: NUMBER
+      - name: TOTAL_QUALIFYING_SESSIONS
+        description: Qualifying sessions participated in.
+        data_type: NUMBER
+      - name: TOTAL_POLE_POSITIONS
+        description: Pole positions taken.
+        data_type: NUMBER
+      - name: TOTAL_FASTEST_LAPS
+        description: Races in which the driver set the fastest lap.
+        data_type: NUMBER
+      - name: TOTAL_POSITIONS_GAINED
+        description: Net places gained from grid to finish across the season.
+        data_type: NUMBER
+      - name: TOTAL_LAPS_COMPLETED
+        description: Laps completed across the season.
+        data_type: NUMBER
+      - name: AVG_QUALIFYING_POSITION
+        description: Mean qualifying classification.
+        data_type: NUMBER
+      - name: AVG_GAP_TO_POLE_SECONDS
+        description: Mean gap to pole across qualifying sessions.
+        data_type: NUMBER
+      - name: AVG_FINISH_POSITION
+        description: Mean classified finishing position.
+        data_type: NUMBER
+      - name: AVG_GRID_POSITION
+        description: Mean starting grid position.
+        data_type: NUMBER
+      - name: AVG_POINTS_PER_RACE
+        description: TOTAL_POINTS divided by TOTAL_RACES_ENTERED.
+        data_type: NUMBER
+      - name: PCT_RACES_IN_POINTS
+        description: Percentage of races entered that scored points.
+        data_type: NUMBER
+      - name: PCT_RACES_RETIRED
+        description: Percentage of races entered that ended unclassified.
+        data_type: NUMBER
+      - name: IS_SEASON_CHAMPION
+        description: True for the driver finishing first in the championship.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - DRIVER_ID
+
+  - name: mrt__agg_constructor_season_summary
+    description: >
+      Metrics layer. One row per constructor per season, sourced from the
+      final round's standings snapshot so it can never disagree with
+      mrt__fct_constructor_standings.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "agg", "metrics", "constructor"]
+      alias: "MRT__AGG_CONSTRUCTOR_SEASON_SUMMARY"
+    columns:
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_ID
+        description: Natural key of the constructor.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_KEY
+        description: FK to mrt__dim_constructors.CONSTRUCTOR_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mrt__dim_constructors')
+                field: CONSTRUCTOR_KEY
+      - name: FINAL_CHAMPIONSHIP_POSITION
+        description: Championship position after the final round.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_POINTS
+        description: Points scored across the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_WINS
+        description: Race wins across the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_PODIUMS
+        description: Podium finishes across the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_POINTS_FINISHES
+        description: Car entries that scored at least one point.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_RETIREMENTS
+        description: Car entries that were not classified.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: TOTAL_CAR_ENTRIES
+        description: Individual car entries across the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: BEST_FINISH
+        description: Best classified finish by any of the constructor's cars.
+        data_type: NUMBER
+      - name: DRIVERS_FIELDED
+        description: Distinct drivers who raced for the constructor.
+        data_type: NUMBER
+      - name: TOTAL_POLE_POSITIONS
+        description: Pole positions taken by the constructor's cars.
+        data_type: NUMBER
+      - name: TOTAL_FASTEST_LAPS
+        description: Fastest laps set by the constructor's cars.
+        data_type: NUMBER
+      - name: TOTAL_LAPS_COMPLETED
+        description: Laps completed across all the constructor's cars.
+        data_type: NUMBER
+      - name: AVG_QUALIFYING_POSITION
+        description: Mean qualifying classification across the constructor's cars.
+        data_type: NUMBER
+      - name: AVG_GAP_TO_POLE_SECONDS
+        description: Mean gap to pole across the constructor's cars.
+        data_type: NUMBER
+      - name: AVG_FINISH_POSITION
+        description: Mean classified finishing position.
+        data_type: NUMBER
+      - name: AVG_POINTS_PER_CAR_ENTRY
+        description: TOTAL_POINTS divided by TOTAL_CAR_ENTRIES.
+        data_type: NUMBER
+      - name: PCT_ENTRIES_RETIRED
+        description: Percentage of car entries that ended unclassified.
+        data_type: NUMBER
+      - name: IS_SEASON_CHAMPION
+        description: True for the constructor finishing first.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - CONSTRUCTOR_ID
+
+  # ===========================================================================
+  # SCD Type 2 history - standalone, not joined to any fact
+  # ===========================================================================
+
+  - name: mrt__dim_drivers_history
+    description: >
+      Full SCD Type 2 version history of the driver entity, built from
+      snap_f1__drivers. One row per historical version of a driver. Not
+      joined to any fact - DRIVER_KEY is identical across every version of a
+      driver, so joining this on DRIVER_KEY would fan out a fact row into N
+      historical versions. Use mrt__dim_drivers for fact joins; use this
+      table only to answer "what was true about this driver as of date X".
+    config:
+      materialized: table
+      tags: ["mart", "f1", "dim", "driver", "history", "scd_type_2"]
+      alias: "MRT__DIM_DRIVERS_HISTORY"
+    columns:
+      - name: DRIVER_VERSION_KEY
+        description: >
+          dbt-generated key uniquely identifying this one version row.
+          Primary key of this table.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: DRIVER_KEY
+        description: >
+          Surrogate key over (DRIVER_ID). Identical across every historical
+          version of the same driver - do not use this as a join key into
+          facts from this table.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: Ergast driver slug. Natural key, not unique in this table.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_CODE
+        description: Three-letter broadcast abbreviation as of this version.
+        data_type: VARCHAR
+      - name: GIVEN_NAME
+        description: Driver first name as of this version.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: FAMILY_NAME
+        description: Driver surname as of this version.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_FULL_NAME
+        description: Canonical full name as of this version.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_NATIONALITY
+        description: Driver nationality as of this version.
+        data_type: VARCHAR
+      - name: PERMANENT_NUMBER
+        description: Permanent car number as of this version.
+        data_type: NUMBER
+      - name: IS_CURRENT
+        description: True for the one active version per DRIVER_KEY.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: DATE_OF_BIRTH
+        description: Driver date of birth as of this version.
+        data_type: DATE
+      - name: DBT_VALID_FROM
+        description: Timestamp this version became active.
+        data_type: TIMESTAMP
+        data_tests:
+          - not_null
+      - name: DBT_VALID_TO
+        description: Timestamp this version was superseded. NULL if current.
+        data_type: TIMESTAMP
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - DRIVER_KEY
+          config:
+            where: "IS_CURRENT"
+            alias: mrt__dim_drivers_history_one_current_version
+
+  - name: mrt__dim_constructors_history
+    description: >
+      Full SCD Type 2 version history of the constructor entity, built from
+      snap_f1__constructors. One row per historical version of a
+      constructor. Not joined to any fact, for the same reason as
+      mrt__dim_drivers_history - CONSTRUCTOR_KEY repeats across versions.
+
+      Does not capture team rebrands (e.g. AlphaTauri -> RB): the source
+      assigns a new CONSTRUCTOR_ID to a rebrand, so it is a new entity under
+      this grain, not a new version of an existing one.
+    config:
+      materialized: table
+      tags: ["mart", "f1", "dim", "constructor", "history", "scd_type_2"]
+      alias: "MRT__DIM_CONSTRUCTORS_HISTORY"
+    columns:
+      - name: CONSTRUCTOR_VERSION_KEY
+        description: >
+          dbt-generated key uniquely identifying this one version row.
+          Primary key of this table.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CONSTRUCTOR_KEY
+        description: >
+          Surrogate key over (CONSTRUCTOR_ID). Identical across every
+          historical version of the same constructor.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_ID
+        description: Ergast constructor slug. Natural key, not unique here.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_NAME
+        description: Constructor display name as of this version.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_NATIONALITY
+        description: Constructor nationality as of this version.
+        data_type: VARCHAR
+      - name: IS_CURRENT
+        description: True for the one active version per CONSTRUCTOR_KEY.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: DBT_VALID_FROM
+        description: Timestamp this version became active.
+        data_type: TIMESTAMP
+        data_tests:
+          - not_null
+      - name: DBT_VALID_TO
+        description: Timestamp this version was superseded. NULL if current.
+        data_type: TIMESTAMP
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - CONSTRUCTOR_KEY
+          config:
+            where: "IS_CURRENT"
+            alias: mrt__dim_constructors_history_one_current_version

@@ -1,0 +1,339 @@
+version: 2
+
+# =============================================================================
+# Unit tests for the gold championship standings snapshots
+# =============================================================================
+# The standings models are the only place in this project that combine a dense
+# spine, cumulative windows, and competitive ranking. Each of those is easy to
+# get subtly wrong in a way production data will not reveal, so they are
+# covered explicitly here.
+#
+#   1x - cumulative points accumulate across rounds and ranking flips
+#   2x - dense spine keeps non-participating drivers in the standings
+#   3x - constructor points roll up from both cars
+#   4x - tie-break falls through to wins
+#
+# Run: dbt test --select "gold,test_type:unit"
+# =============================================================================
+
+unit_tests:
+
+  # ===========================================================================
+  # 1x - CUMULATIVE ACCUMULATION AND POSITION CHANGES
+  # ===========================================================================
+
+  - name: mrt__fct_driver_standings_test_1_accumulates_and_reranks
+    model: mrt__fct_driver_standings
+    description: |
+      Case 1: two drivers over two rounds.
+        R1 - verstappen wins (25), hamilton second (18)
+        R2 - hamilton wins (25), verstappen retires (0)
+      After R1 verstappen leads on 25. After R2 hamilton leads on 43 and
+      verstappen is second on 25, 18 points behind. This proves the cumulative
+      window sums only prior rounds and that the ranking is recomputed per
+      round rather than carried forward.
+    given:
+      - input: ref('slv_f1__races')
+        rows:
+          - { RACE_KEY: "r1", SEASON: 2022, ROUND: 1, RACE_DATE: "2022-03-20" }
+          - { RACE_KEY: "r2", SEASON: 2022, ROUND: 2, RACE_DATE: "2022-03-27" }
+      - input: ref('slv_f1__results')
+        rows:
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "max_verstappen", DRIVER_KEY: "dk_ver",
+              CONSTRUCTOR_ID: "red_bull", CONSTRUCTOR_KEY: "ck_rb",
+              POINTS_SCORED: 25, CLASSIFIED_POSITION: 1,
+              IS_RACE_WINNER: true, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "hamilton", DRIVER_KEY: "dk_ham",
+              CONSTRUCTOR_ID: "mercedes", CONSTRUCTOR_KEY: "ck_merc",
+              POINTS_SCORED: 18, CLASSIFIED_POSITION: 2,
+              IS_RACE_WINNER: false, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+          - {
+              SEASON: 2022, ROUND: 2, DRIVER_ID: "hamilton", DRIVER_KEY: "dk_ham",
+              CONSTRUCTOR_ID: "mercedes", CONSTRUCTOR_KEY: "ck_merc",
+              POINTS_SCORED: 25, CLASSIFIED_POSITION: 1,
+              IS_RACE_WINNER: true, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+          - {
+              SEASON: 2022, ROUND: 2, DRIVER_ID: "max_verstappen", DRIVER_KEY: "dk_ver",
+              CONSTRUCTOR_ID: "red_bull", CONSTRUCTOR_KEY: "ck_rb",
+              POINTS_SCORED: 0, CLASSIFIED_POSITION: null,
+              IS_RACE_WINNER: false, IS_PODIUM_FINISH: false, IS_POINTS_FINISH: false, IS_CLASSIFIED: false
+            }
+      # qualifying only feeds the final countback tier, which this case never
+      # reaches - mocked empty so the dependency is explicit
+      - input: ref('slv_f1__qualifying')
+        rows: []
+    expect:
+      rows:
+        - {
+            SEASON: 2022, ROUND: 1, DRIVER_ID: "max_verstappen",
+            POINTS_TO_DATE: 25, WINS_TO_DATE: 1, CHAMPIONSHIP_POSITION: 1,
+            POINTS_BEHIND_LEADER: 0, IS_CHAMPIONSHIP_LEADER: true,
+            HAS_RACED_THIS_ROUND: true, RETIREMENTS_TO_DATE: 0
+          }
+        - {
+            SEASON: 2022, ROUND: 1, DRIVER_ID: "hamilton",
+            POINTS_TO_DATE: 18, WINS_TO_DATE: 0, CHAMPIONSHIP_POSITION: 2,
+            POINTS_BEHIND_LEADER: 7, IS_CHAMPIONSHIP_LEADER: false,
+            HAS_RACED_THIS_ROUND: true, RETIREMENTS_TO_DATE: 0
+          }
+        - {
+            SEASON: 2022, ROUND: 2, DRIVER_ID: "hamilton",
+            POINTS_TO_DATE: 43, WINS_TO_DATE: 1, CHAMPIONSHIP_POSITION: 1,
+            POINTS_BEHIND_LEADER: 0, IS_CHAMPIONSHIP_LEADER: true,
+            HAS_RACED_THIS_ROUND: true, RETIREMENTS_TO_DATE: 0
+          }
+        - {
+            SEASON: 2022, ROUND: 2, DRIVER_ID: "max_verstappen",
+            POINTS_TO_DATE: 25, WINS_TO_DATE: 1, CHAMPIONSHIP_POSITION: 2,
+            POINTS_BEHIND_LEADER: 18, IS_CHAMPIONSHIP_LEADER: false,
+            HAS_RACED_THIS_ROUND: true, RETIREMENTS_TO_DATE: 1
+          }
+
+  # ===========================================================================
+  # 2x - DENSE SPINE FOR NON-PARTICIPATING DRIVERS
+  # ===========================================================================
+
+  - name: mrt__fct_driver_standings_test_2_absent_driver_still_snapshotted
+    model: mrt__fct_driver_standings
+    description: |
+      Case 2: this is what makes the model a periodic snapshot rather than a
+      transaction fact. A driver who races round 1 and then misses round 2
+      must still get a round 2 row, with ROUND_POINTS = 0, unchanged
+      cumulative points, HAS_RACED_THIS_ROUND = false, and their constructor
+      carried forward by LAST_VALUE(... IGNORE NULLS).
+
+      The round 1 row for russell also covers the pre-debut case: he has no
+      earlier team to carry forward, so CONSTRUCTOR_ID falls back to the
+      first team he is seen with rather than being left NULL.
+    given:
+      - input: ref('slv_f1__races')
+        rows:
+          - { RACE_KEY: "r1", SEASON: 2022, ROUND: 1, RACE_DATE: "2022-03-20" }
+          - { RACE_KEY: "r2", SEASON: 2022, ROUND: 2, RACE_DATE: "2022-03-27" }
+      - input: ref('slv_f1__results')
+        rows:
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "albon", DRIVER_KEY: "dk_alb",
+              CONSTRUCTOR_ID: "williams", CONSTRUCTOR_KEY: "ck_wil",
+              POINTS_SCORED: 10, CLASSIFIED_POSITION: 5,
+              IS_RACE_WINNER: false, IS_PODIUM_FINISH: false, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+          - {
+              SEASON: 2022, ROUND: 2, DRIVER_ID: "russell", DRIVER_KEY: "dk_rus",
+              CONSTRUCTOR_ID: "mercedes", CONSTRUCTOR_KEY: "ck_merc",
+              POINTS_SCORED: 25, CLASSIFIED_POSITION: 1,
+              IS_RACE_WINNER: true, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+      - input: ref('slv_f1__qualifying')
+        rows: []
+    expect:
+      rows:
+        # round 1 - albon scores, russell has not debuted yet but is a season
+        # entrant, so he is carried at zero with his future team back-filled
+        - {
+            SEASON: 2022, ROUND: 1, DRIVER_ID: "albon", CONSTRUCTOR_ID: "williams",
+            ROUND_POINTS: 10, POINTS_TO_DATE: 10, CHAMPIONSHIP_POSITION: 1,
+            HAS_RACED_THIS_ROUND: true
+          }
+        - {
+            SEASON: 2022, ROUND: 1, DRIVER_ID: "russell", CONSTRUCTOR_ID: "mercedes",
+            ROUND_POINTS: 0, POINTS_TO_DATE: 0, CHAMPIONSHIP_POSITION: 2,
+            HAS_RACED_THIS_ROUND: false
+          }
+        # round 2 - albon absent, totals unchanged, team carried forward
+        - {
+            SEASON: 2022, ROUND: 2, DRIVER_ID: "russell", CONSTRUCTOR_ID: "mercedes",
+            ROUND_POINTS: 25, POINTS_TO_DATE: 25, CHAMPIONSHIP_POSITION: 1,
+            HAS_RACED_THIS_ROUND: true
+          }
+        - {
+            SEASON: 2022, ROUND: 2, DRIVER_ID: "albon", CONSTRUCTOR_ID: "williams",
+            ROUND_POINTS: 0, POINTS_TO_DATE: 10, CHAMPIONSHIP_POSITION: 2,
+            HAS_RACED_THIS_ROUND: false
+          }
+
+  # ===========================================================================
+  # 3x - CONSTRUCTOR ROLLUP ACROSS BOTH CARS
+  # ===========================================================================
+
+  - name: mrt__fct_constructor_standings_test_3_sums_both_cars
+    model: mrt__fct_constructor_standings
+    description: |
+      Case 3: a constructor's round points are the sum of both its cars. Here
+      ferrari scores 25 + 18 = 43 in one round against mercedes on 15, and
+      CAR_ENTRIES_TO_DATE counts individual entries rather than rounds.
+    given:
+      - input: ref('slv_f1__races')
+        rows:
+          - { RACE_KEY: "r1", SEASON: 2022, ROUND: 1, RACE_DATE: "2022-03-20" }
+      - input: ref('slv_f1__results')
+        rows:
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "leclerc", CONSTRUCTOR_ID: "ferrari",
+              CONSTRUCTOR_KEY: "ck_fer", POINTS_SCORED: 25, CLASSIFIED_POSITION: 1,
+              IS_RACE_WINNER: true, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "sainz", CONSTRUCTOR_ID: "ferrari",
+              CONSTRUCTOR_KEY: "ck_fer", POINTS_SCORED: 18, CLASSIFIED_POSITION: 2,
+              IS_RACE_WINNER: false, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "hamilton", CONSTRUCTOR_ID: "mercedes",
+              CONSTRUCTOR_KEY: "ck_merc", POINTS_SCORED: 15, CLASSIFIED_POSITION: 3,
+              IS_RACE_WINNER: false, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+      - input: ref('slv_f1__qualifying')
+        rows: []
+    expect:
+      rows:
+        - {
+            SEASON: 2022, ROUND: 1, CONSTRUCTOR_ID: "ferrari",
+            POINTS_TO_DATE: 43, WINS_TO_DATE: 1, PODIUMS_TO_DATE: 2,
+            CAR_ENTRIES_TO_DATE: 2, BEST_FINISH_TO_DATE: 1,
+            CHAMPIONSHIP_POSITION: 1, POINTS_BEHIND_LEADER: 0,
+            IS_CHAMPIONSHIP_LEADER: true, HAS_RACED_THIS_ROUND: true
+          }
+        - {
+            SEASON: 2022, ROUND: 1, CONSTRUCTOR_ID: "mercedes",
+            POINTS_TO_DATE: 15, WINS_TO_DATE: 0, PODIUMS_TO_DATE: 1,
+            CAR_ENTRIES_TO_DATE: 1, BEST_FINISH_TO_DATE: 3,
+            CHAMPIONSHIP_POSITION: 2, POINTS_BEHIND_LEADER: 28,
+            IS_CHAMPIONSHIP_LEADER: false, HAS_RACED_THIS_ROUND: true
+          }
+
+  # ===========================================================================
+  # 4x - COUNTBACK TIE-BREAK
+  # ===========================================================================
+
+  - name: mrt__fct_driver_standings_test_4_tie_broken_by_wins
+    model: mrt__fct_driver_standings
+    description: |
+      Case 4: two drivers level on points after two rounds. The driver with
+      more wins must rank ahead. This covers the first tier of the countback
+      after points - without it, RANK would declare a two-way tie for first.
+
+      perez: 25 + 0  = 25 with 1 win
+      russell: 18 + 7 = 25 with 0 wins
+    given:
+      - input: ref('slv_f1__races')
+        rows:
+          - { RACE_KEY: "r1", SEASON: 2022, ROUND: 1, RACE_DATE: "2022-03-20" }
+          - { RACE_KEY: "r2", SEASON: 2022, ROUND: 2, RACE_DATE: "2022-03-27" }
+      - input: ref('slv_f1__results')
+        rows:
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "perez", CONSTRUCTOR_ID: "red_bull",
+              DRIVER_KEY: "dk_per", CONSTRUCTOR_KEY: "ck_rb",
+              POINTS_SCORED: 25, CLASSIFIED_POSITION: 1,
+              IS_RACE_WINNER: true, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "russell", CONSTRUCTOR_ID: "mercedes",
+              DRIVER_KEY: "dk_rus", CONSTRUCTOR_KEY: "ck_merc",
+              POINTS_SCORED: 18, CLASSIFIED_POSITION: 2,
+              IS_RACE_WINNER: false, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+          - {
+              SEASON: 2022, ROUND: 2, DRIVER_ID: "russell", CONSTRUCTOR_ID: "mercedes",
+              DRIVER_KEY: "dk_rus", CONSTRUCTOR_KEY: "ck_merc",
+              POINTS_SCORED: 7, CLASSIFIED_POSITION: 6,
+              IS_RACE_WINNER: false, IS_PODIUM_FINISH: false, IS_POINTS_FINISH: true, IS_CLASSIFIED: true
+            }
+          - {
+              SEASON: 2022, ROUND: 2, DRIVER_ID: "perez", CONSTRUCTOR_ID: "red_bull",
+              DRIVER_KEY: "dk_per", CONSTRUCTOR_KEY: "ck_rb",
+              POINTS_SCORED: 0, CLASSIFIED_POSITION: 14,
+              IS_RACE_WINNER: false, IS_PODIUM_FINISH: false, IS_POINTS_FINISH: false, IS_CLASSIFIED: true
+            }
+      - input: ref('slv_f1__qualifying')
+        rows: []
+    expect:
+      rows:
+        - { SEASON: 2022, ROUND: 1, DRIVER_ID: "perez",   POINTS_TO_DATE: 25, WINS_TO_DATE: 1, CHAMPIONSHIP_POSITION: 1 }
+        - { SEASON: 2022, ROUND: 1, DRIVER_ID: "russell", POINTS_TO_DATE: 18, WINS_TO_DATE: 0, CHAMPIONSHIP_POSITION: 2 }
+        - { SEASON: 2022, ROUND: 2, DRIVER_ID: "perez",   POINTS_TO_DATE: 25, WINS_TO_DATE: 1, CHAMPIONSHIP_POSITION: 1 }
+        - { SEASON: 2022, ROUND: 2, DRIVER_ID: "russell", POINTS_TO_DATE: 25, WINS_TO_DATE: 0, CHAMPIONSHIP_POSITION: 2 }
+
+  - name: mrt__fct_driver_standings_test_5_tie_broken_by_second_places
+    model: mrt__fct_driver_standings
+    description: |
+      Case 5: the countback must continue past wins into 2nd places. Both
+      drivers finish on 44 points with exactly one win, so points and the
+      first countback tier are identical. leclerc has one 2nd place and sainz
+      has none, so leclerc ranks ahead.
+
+      leclerc: P1 (25) + P2 (18) + P10 (1)  = 44, counts P1=1, P2=1
+      sainz:   P1 (25) + P3 (15) + P8  (4)  = 44, counts P1=1, P2=0, P3=1
+
+      A naive "podiums" tie-break would call this a dead heat, because both
+      drivers have two podiums.
+    given:
+      - input: ref('slv_f1__races')
+        rows:
+          - { RACE_KEY: "r1", SEASON: 2022, ROUND: 1, RACE_DATE: "2022-03-20" }
+          - { RACE_KEY: "r2", SEASON: 2022, ROUND: 2, RACE_DATE: "2022-03-27" }
+          - { RACE_KEY: "r3", SEASON: 2022, ROUND: 3, RACE_DATE: "2022-04-10" }
+      - input: ref('slv_f1__results')
+        rows:
+          # leclerc - win, second, tenth
+          - { SEASON: 2022, ROUND: 1, DRIVER_ID: "leclerc", DRIVER_KEY: "dk_lec", CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_KEY: "ck_fer", POINTS_SCORED: 25, CLASSIFIED_POSITION: 1,  IS_RACE_WINNER: true,  IS_PODIUM_FINISH: true,  IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+          - { SEASON: 2022, ROUND: 2, DRIVER_ID: "leclerc", DRIVER_KEY: "dk_lec", CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_KEY: "ck_fer", POINTS_SCORED: 18, CLASSIFIED_POSITION: 2,  IS_RACE_WINNER: false, IS_PODIUM_FINISH: true,  IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+          - { SEASON: 2022, ROUND: 3, DRIVER_ID: "leclerc", DRIVER_KEY: "dk_lec", CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_KEY: "ck_fer", POINTS_SCORED: 1,  CLASSIFIED_POSITION: 10, IS_RACE_WINNER: false, IS_PODIUM_FINISH: false, IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+          # sainz - win, third, eighth
+          - { SEASON: 2022, ROUND: 2, DRIVER_ID: "sainz", DRIVER_KEY: "dk_sai", CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_KEY: "ck_fer", POINTS_SCORED: 25, CLASSIFIED_POSITION: 1, IS_RACE_WINNER: true,  IS_PODIUM_FINISH: true,  IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+          - { SEASON: 2022, ROUND: 1, DRIVER_ID: "sainz", DRIVER_KEY: "dk_sai", CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_KEY: "ck_fer", POINTS_SCORED: 15, CLASSIFIED_POSITION: 3, IS_RACE_WINNER: false, IS_PODIUM_FINISH: true,  IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+          - { SEASON: 2022, ROUND: 3, DRIVER_ID: "sainz", DRIVER_KEY: "dk_sai", CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_KEY: "ck_fer", POINTS_SCORED: 4,  CLASSIFIED_POSITION: 8, IS_RACE_WINNER: false, IS_PODIUM_FINISH: false, IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+      # the tie resolves at the 2nd-place tier, so qualifying is never consulted
+      - input: ref('slv_f1__qualifying')
+        rows: []
+    expect:
+      rows:
+        - { SEASON: 2022, ROUND: 1, DRIVER_ID: "leclerc", CHAMPIONSHIP_POSITION: 1, POINTS_TO_DATE: 25, WINS_TO_DATE: 1, PODIUMS_TO_DATE: 1, SECOND_PLACES_TO_DATE: 0, THIRD_PLACES_TO_DATE: 0 }
+        - { SEASON: 2022, ROUND: 1, DRIVER_ID: "sainz",   CHAMPIONSHIP_POSITION: 2, POINTS_TO_DATE: 15, WINS_TO_DATE: 0, PODIUMS_TO_DATE: 1, SECOND_PLACES_TO_DATE: 0, THIRD_PLACES_TO_DATE: 1 }
+        - { SEASON: 2022, ROUND: 2, DRIVER_ID: "leclerc", CHAMPIONSHIP_POSITION: 1, POINTS_TO_DATE: 43, WINS_TO_DATE: 1, PODIUMS_TO_DATE: 2, SECOND_PLACES_TO_DATE: 1, THIRD_PLACES_TO_DATE: 0 }
+        - { SEASON: 2022, ROUND: 2, DRIVER_ID: "sainz",   CHAMPIONSHIP_POSITION: 2, POINTS_TO_DATE: 40, WINS_TO_DATE: 1, PODIUMS_TO_DATE: 2, SECOND_PLACES_TO_DATE: 0, THIRD_PLACES_TO_DATE: 1 }
+        # the decisive round: identical points and wins, split on 2nd places
+        - { SEASON: 2022, ROUND: 3, DRIVER_ID: "leclerc", CHAMPIONSHIP_POSITION: 1, POINTS_TO_DATE: 44, WINS_TO_DATE: 1, PODIUMS_TO_DATE: 2, SECOND_PLACES_TO_DATE: 1, THIRD_PLACES_TO_DATE: 0 }
+        - { SEASON: 2022, ROUND: 3, DRIVER_ID: "sainz",   CHAMPIONSHIP_POSITION: 2, POINTS_TO_DATE: 44, WINS_TO_DATE: 1, PODIUMS_TO_DATE: 2, SECOND_PLACES_TO_DATE: 0, THIRD_PLACES_TO_DATE: 1 }
+
+  - name: mrt__fct_driver_standings_test_6_tie_broken_by_qualifying
+    model: mrt__fct_driver_standings
+    description: |
+      Case 6: the final tier of the countback. Both drivers end on 43 points
+      with an identical race record - one win and one 2nd place each - so the
+      race countback cannot separate them. The tie therefore falls through to
+      qualifying, where hamilton has two poles and bottas has none.
+
+      This is the tier that a points/wins/podiums tie-break would miss
+      entirely.
+    given:
+      - input: ref('slv_f1__races')
+        rows:
+          - { RACE_KEY: "r1", SEASON: 2022, ROUND: 1, RACE_DATE: "2022-03-20" }
+          - { RACE_KEY: "r2", SEASON: 2022, ROUND: 2, RACE_DATE: "2022-03-27" }
+      - input: ref('slv_f1__results')
+        rows:
+          - { SEASON: 2022, ROUND: 1, DRIVER_ID: "hamilton", DRIVER_KEY: "dk_ham", CONSTRUCTOR_ID: "mercedes", CONSTRUCTOR_KEY: "ck_merc", POINTS_SCORED: 25, CLASSIFIED_POSITION: 1, IS_RACE_WINNER: true,  IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+          - { SEASON: 2022, ROUND: 2, DRIVER_ID: "hamilton", DRIVER_KEY: "dk_ham", CONSTRUCTOR_ID: "mercedes", CONSTRUCTOR_KEY: "ck_merc", POINTS_SCORED: 18, CLASSIFIED_POSITION: 2, IS_RACE_WINNER: false, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+          - { SEASON: 2022, ROUND: 1, DRIVER_ID: "bottas",   DRIVER_KEY: "dk_bot", CONSTRUCTOR_ID: "alfa",     CONSTRUCTOR_KEY: "ck_alfa", POINTS_SCORED: 18, CLASSIFIED_POSITION: 2, IS_RACE_WINNER: false, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+          - { SEASON: 2022, ROUND: 2, DRIVER_ID: "bottas",   DRIVER_KEY: "dk_bot", CONSTRUCTOR_ID: "alfa",     CONSTRUCTOR_KEY: "ck_alfa", POINTS_SCORED: 25, CLASSIFIED_POSITION: 1, IS_RACE_WINNER: true,  IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true, IS_CLASSIFIED: true }
+      - input: ref('slv_f1__qualifying')
+        rows:
+          - { SEASON: 2022, ROUND: 1, DRIVER_ID: "hamilton", QUALIFYING_POSITION: 1 }
+          - { SEASON: 2022, ROUND: 2, DRIVER_ID: "hamilton", QUALIFYING_POSITION: 1 }
+          - { SEASON: 2022, ROUND: 1, DRIVER_ID: "bottas",   QUALIFYING_POSITION: 3 }
+          - { SEASON: 2022, ROUND: 2, DRIVER_ID: "bottas",   QUALIFYING_POSITION: 3 }
+    expect:
+      rows:
+        - { SEASON: 2022, ROUND: 1, DRIVER_ID: "hamilton", CHAMPIONSHIP_POSITION: 1, POINTS_TO_DATE: 25, WINS_TO_DATE: 1, SECOND_PLACES_TO_DATE: 0, POLE_POSITIONS_TO_DATE: 1 }
+        - { SEASON: 2022, ROUND: 1, DRIVER_ID: "bottas",   CHAMPIONSHIP_POSITION: 2, POINTS_TO_DATE: 18, WINS_TO_DATE: 0, SECOND_PLACES_TO_DATE: 1, POLE_POSITIONS_TO_DATE: 0 }
+        # identical points, wins and 2nd places - only qualifying separates them
+        - { SEASON: 2022, ROUND: 2, DRIVER_ID: "hamilton", CHAMPIONSHIP_POSITION: 1, POINTS_TO_DATE: 43, WINS_TO_DATE: 1, SECOND_PLACES_TO_DATE: 1, POLE_POSITIONS_TO_DATE: 2 }
+        - { SEASON: 2022, ROUND: 2, DRIVER_ID: "bottas",   CHAMPIONSHIP_POSITION: 2, POINTS_TO_DATE: 43, WINS_TO_DATE: 1, SECOND_PLACES_TO_DATE: 1, POLE_POSITIONS_TO_DATE: 0 }
+

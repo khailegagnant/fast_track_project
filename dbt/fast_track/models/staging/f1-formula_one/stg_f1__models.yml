@@ -1,0 +1,378 @@
+version: 2
+
+models:
+  - name: stg_f1__circuits
+    description: >
+      Staging passthrough over F1_RAW.RAW_CIRCUITS. Select and rename only -
+      types are inherited from RAW. Casting, trimming, and coordinate
+      validation happen in slv_f1__circuits. One row per circuit.
+    config:
+      materialized: view
+      tags: ["staging", "f1", "circuit"]
+      alias: "STG_F1__CIRCUITS"
+    columns:
+      - name: CIRCUIT_ID
+        description: Ergast circuit slug, e.g. 'albert_park'. Natural key.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CIRCUIT_NAME
+        description: Full circuit name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: LOCALITY
+        description: City or locality hosting the circuit.
+        data_type: VARCHAR
+      - name: COUNTRY
+        description: Country hosting the circuit.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: LATITUDE
+        description: Circuit latitude in decimal degrees, between -90 and 90.
+        data_type: FLOAT
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: -90
+                max_value: 90
+      - name: LONGITUDE
+        description: Circuit longitude in decimal degrees, between -180 and 180.
+        data_type: FLOAT
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: -180
+                max_value: 180
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+
+  - name: stg_f1__constructors
+    description: >
+      Staging passthrough over F1_RAW.RAW_CONSTRUCTORS. Intentionally retains
+      the duplicate rows present in RAW (the API is pulled per season, so a
+      constructor appears once per season it competed in). Deduplication
+      happens in slv_f1__constructors.
+    config:
+      materialized: view
+      tags: ["staging", "f1", "constructor"]
+      alias: "STG_F1__CONSTRUCTORS"
+    columns:
+      - name: CONSTRUCTOR_ID
+        description: Ergast constructor slug, e.g. 'red_bull'. Not unique here.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_NAME
+        description: Constructor display name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_NATIONALITY
+        description: Constructor nationality.
+        data_type: VARCHAR
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+
+  - name: stg_f1__drivers
+    description: >
+      Staging passthrough over F1_RAW.RAW_DRIVERS. Intentionally retains the
+      duplicate rows present in RAW - the API is pulled per season, so a
+      driver appears once per season they competed in. Deduplication happens
+      in slv_f1__drivers.
+    config:
+      materialized: view
+      tags: ["staging", "f1", "driver"]
+      alias: "STG_F1__DRIVERS"
+    columns:
+      - name: DRIVER_ID
+        description: Ergast driver slug, e.g. 'max_verstappen'. Not unique here.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_CODE
+        description: Three-letter broadcast abbreviation, e.g. 'VER'.
+        data_type: VARCHAR
+      - name: GIVEN_NAME
+        description: Driver first name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: FAMILY_NAME
+        description: Driver surname.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_NATIONALITY
+        description: Driver nationality.
+        data_type: VARCHAR
+      - name: PERMANENT_NUMBER
+        description: >
+          Driver's permanent car number. Deliberately not tested for
+          uniqueness - retired numbers are reassigned to new drivers.
+        data_type: NUMBER
+      - name: DATE_OF_BIRTH
+        description: >
+          Driver date of birth. NULL for reserve and FP1-only drivers, whom
+          the API lists without biographical detail, so this is a warning
+          rather than a hard failure.
+        data_type: DATE
+        data_tests:
+          - not_null:
+              arguments: {}
+              config:
+                severity: warn
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+
+  - name: stg_f1__races
+    description: >
+      Staging passthrough over F1_RAW.RAW_RACES. Select and rename only;
+      RACE_TIMESTAMP_UTC becomes RACE_STARTED_AT. Grain is SEASON + ROUND.
+    config:
+      materialized: view
+      tags: ["staging", "f1", "race"]
+      alias: "STG_F1__RACES"
+    columns:
+      - name: SEASON
+        description: Championship season (calendar year).
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round number within the season, starting at 1.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: CIRCUIT_ID
+        description: FK to stg_f1__circuits.CIRCUIT_ID.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_f1__circuits')
+                field: CIRCUIT_ID
+      - name: RACE_NAME
+        description: Official Grand Prix name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: RACE_TIME
+        description: Race start time as a UTC string, e.g. '15:00:00Z'.
+        data_type: VARCHAR
+      - name: RACE_URL
+        description: Wikipedia URL for the race.
+        data_type: VARCHAR
+      - name: RACE_DATE
+        description: Local race date.
+        data_type: DATE
+        data_tests:
+          - not_null
+      - name: RACE_STARTED_AT
+        description: Race start timestamp in UTC.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+
+  - name: stg_f1__qualifying
+    description: >
+      Staging passthrough over F1_RAW.RAW_QUALIFYING. Select and rename only;
+      POSITION becomes QUALIFYING_POSITION and lap-time strings are kept
+      verbatim. Grain is SEASON + ROUND + DRIVER_ID. Blank Q2/Q3 times mean
+      the driver was knocked out in an earlier segment, which is expected
+      rather than a data defect.
+    config:
+      materialized: view
+      tags: ["staging", "f1", "qualifying"]
+      alias: "STG_F1__QUALIFYING"
+    columns:
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round number within the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: FK to stg_f1__drivers.DRIVER_ID.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_f1__drivers')
+                field: DRIVER_ID
+      - name: CONSTRUCTOR_ID
+        description: Constructor the driver qualified for.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: Q1_TIME_STR
+        description: Q1 lap time as 'M:SS.sss'. NULL if no time set.
+        data_type: VARCHAR
+      - name: Q2_TIME_STR
+        description: Q2 lap time as 'M:SS.sss'. NULL if eliminated in Q1.
+        data_type: VARCHAR
+      - name: Q3_TIME_STR
+        description: Q3 lap time as 'M:SS.sss'. NULL if eliminated in Q2.
+        data_type: VARCHAR
+      - name: QUALIFYING_POSITION
+        description: Final qualifying classification, 1 = pole position.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 30
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+              - DRIVER_ID
+
+  - name: stg_f1__results
+    description: >
+      Staging passthrough over F1_RAW.RAW_RESULTS. Select only - every column
+      already carries its business name in RAW. Grain is
+      SEASON + ROUND + DRIVER_ID.
+    config:
+      materialized: view
+      tags: ["staging", "f1", "result"]
+      alias: "STG_F1__RESULTS"
+    columns:
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round number within the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: FK to stg_f1__drivers.DRIVER_ID.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_f1__drivers')
+                field: DRIVER_ID
+      - name: CONSTRUCTOR_ID
+        description: Constructor the driver raced for.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: POSITION_TEXT
+        description: >
+          Ergast position text - numeric for classified finishers, or a code
+          such as 'R' (retired), 'D' (disqualified), 'E' (excluded),
+          'W' (withdrew), 'F' (failed to qualify), 'N' (not classified).
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: STATUS
+        description: Finishing status, e.g. 'Finished', '+1 Lap', 'Power Unit'.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: FASTEST_LAP_TIME_STR
+        description: Fastest lap time as 'M:SS.sss'.
+        data_type: VARCHAR
+      - name: GRID_POSITION
+        description: Starting grid slot. 0 indicates a pit-lane start.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: FINISH_POSITION
+        description: Final classified position.
+        data_type: NUMBER
+      - name: POINTS_SCORED
+        description: Championship points awarded for this result.
+        data_type: FLOAT
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 50
+      - name: LAPS_COMPLETED
+        description: Number of laps completed.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: RACE_TIME_MILLIS
+        description: Total race time in ms. NULL for drivers who did not finish.
+        data_type: NUMBER
+      - name: FASTEST_LAP_RANK
+        description: Rank of this driver's fastest lap within the race.
+        data_type: NUMBER
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+              - DRIVER_ID

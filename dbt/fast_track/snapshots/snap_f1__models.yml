@@ -1,0 +1,147 @@
+version: 2
+
+# =============================================================================
+# SCD Type 2 snapshots of the driver and constructor silver entities.
+# =============================================================================
+# Strategy is `check`, not `timestamp`: the F1 API supplies no genuine
+# UPDATED_AT for either entity, and DBT_LOADED_AT is stamped from
+# run_started_at, so it is identical for every row in a run and cannot order
+# anything. `check` instead compares the listed business columns against the
+# latest snapshotted version on every run and opens a new version only when
+# one of them actually differs.
+#
+# As of the current data, no driver or constructor has ever had a differing
+# attribute across its duplicate RAW rows, so the first `dbt snapshot` run
+# produces exactly one version per entity (DBT_VALID_TO = the configured
+# "current" sentinel). This is correct, expected behavior, not a bug: the
+# snapshot is infrastructure for when an attribute *does* change in a future
+# load, not a claim that history already exists. Verified by manually
+# mutating a driver's PERMANENT_NUMBER in RAW during development and
+# confirming a second version opened with the correct DBT_VALID_FROM/TO.
+#
+# `hard_deletes: invalidate` is configured so a version is closed out if its
+# driver/constructor disappears from slv_f1__drivers/constructors entirely.
+# Note: this dbt engine version (dbt-core 2.0.0-alpha.2 / Fusion) does not
+# materialize the DBT_IS_DELETED column some dbt versions add for this case;
+# only DBT_SCD_ID, DBT_VALID_FROM, and DBT_VALID_TO are guaranteed present
+# here. The hard_deletes behavior itself was not separately verified.
+#
+# unique_key is the surrogate key (DRIVER_KEY / CONSTRUCTOR_KEY), consistent
+# with every other join in this project using surrogate keys over natural
+# keys.
+#
+# These snapshots are NOT read by any fact or by mrt__dim_drivers /
+# mrt__dim_constructors. DRIVER_KEY and CONSTRUCTOR_KEY are hashes of the
+# natural key alone, so every historical version of an entity shares the same
+# key - merging snapshot history into the existing dimensions would break
+# their `unique` tests and fan out every fact join. History is exposed
+# separately via mrt__dim_drivers_history / mrt__dim_constructors_history,
+# which are not joined to anything.
+# =============================================================================
+
+snapshots:
+  - name: snap_f1__drivers
+    description: >
+      SCD Type 2 history of slv_f1__drivers. Tracks DRIVER_CODE,
+      PERMANENT_NUMBER, and other identity attributes over time. Each row is
+      one version of a driver; DBT_VALID_TO = NULL (current()) marks the
+      active version.
+    relation: ref('slv_f1__drivers')
+    config:
+      unique_key: DRIVER_KEY
+      strategy: check
+      check_cols:
+        - DRIVER_CODE
+        - GIVEN_NAME
+        - FAMILY_NAME
+        - DRIVER_FULL_NAME
+        - DRIVER_NATIONALITY
+        - PERMANENT_NUMBER
+        - DATE_OF_BIRTH
+      hard_deletes: invalidate
+
+    columns:
+      - name: DRIVER_KEY
+        description: >
+          Surrogate key over (DRIVER_ID). Consistent across every historical
+          version of the same driver - never use this alone to pick a single
+          version.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: Ergast driver slug, e.g. 'max_verstappen'. Natural key.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DBT_SCD_ID
+        description: >
+          dbt-generated key that uniquely identifies this one historical
+          version row. Use this, not DRIVER_KEY, to pin a fact to a specific
+          point-in-time version.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: DBT_VALID_FROM
+        description: Timestamp this version became active.
+        data_type: TIMESTAMP
+        data_tests:
+          - not_null
+      - name: DBT_VALID_TO
+        description: >
+          Timestamp this version was superseded. NULL for the currently
+          active version - filter on DBT_VALID_TO IS NULL for current drivers
+          only.
+        data_type: TIMESTAMP
+
+  - name: snap_f1__constructors
+    description: >
+      SCD Type 2 history of slv_f1__constructors. Tracks CONSTRUCTOR_NAME and
+      CONSTRUCTOR_NATIONALITY over time. Each row is one version of a
+      constructor; DBT_VALID_TO = NULL (current()) marks the active version.
+
+      Does NOT capture team rebrands (e.g. AlphaTauri -> RB): the source
+      assigns a new CONSTRUCTOR_ID to a rebrand rather than renaming the
+      existing one, so a rebrand is a new entity under this grain, not a
+      version of an old one.
+    relation: ref('slv_f1__constructors')
+    config:
+      unique_key: CONSTRUCTOR_KEY
+      strategy: check
+      check_cols:
+        - CONSTRUCTOR_NAME
+        - CONSTRUCTOR_NATIONALITY
+      hard_deletes: invalidate
+
+    columns:
+      - name: CONSTRUCTOR_KEY
+        description: >
+          Surrogate key over (CONSTRUCTOR_ID). Consistent across every
+          historical version of the same constructor.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_ID
+        description: Ergast constructor slug, e.g. 'red_bull'. Natural key.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DBT_SCD_ID
+        description: >
+          dbt-generated key that uniquely identifies this one historical
+          version row.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: DBT_VALID_FROM
+        description: Timestamp this version became active.
+        data_type: TIMESTAMP
+        data_tests:
+          - not_null
+      - name: DBT_VALID_TO
+        description: >
+          Timestamp this version was superseded. NULL for the currently
+          active version.
+        data_type: TIMESTAMP

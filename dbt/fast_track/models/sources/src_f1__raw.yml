@@ -1,0 +1,214 @@
+version: 2
+
+sources:
+  - name: F1_RAW
+    description: >
+      Landing zone for Ergast-style Formula 1 data. JSON is pulled from the F1
+      API into S3, exploded to parquet by a Glue/Spark job, then loaded into
+      F1_CAPSTONE.RAW with COPY INTO. These tables are append-style loads and
+      are not cleaned or deduplicated upstream of dbt.
+
+    database: "{{ env_var('SNOWFLAKE_DATABASE', 'F1_CAPSTONE') }}"
+    schema: RAW
+
+    tables:
+      - name: RAW_CIRCUITS
+        description: One row per circuit that has hosted a Grand Prix.
+        columns:
+          - name: CIRCUIT_ID
+            description: Ergast circuit slug, e.g. 'albert_park'. Natural key.
+            data_type: VARCHAR
+            data_tests:
+              - not_null
+              - unique
+          - name: CIRCUIT_NAME
+            description: Full circuit name, e.g. 'Albert Park Grand Prix Circuit'.
+            data_type: VARCHAR
+          - name: LOCALITY
+            description: City or locality hosting the circuit.
+            data_type: VARCHAR
+          - name: COUNTRY
+            description: Country hosting the circuit.
+            data_type: VARCHAR
+          - name: LATITUDE
+            description: Circuit latitude in decimal degrees.
+            data_type: FLOAT
+          - name: LONGITUDE
+            description: Circuit longitude in decimal degrees.
+            data_type: FLOAT
+
+      - name: RAW_CONSTRUCTORS
+        description: >
+          One row per constructor (team) per API pull. The API is queried per
+          season, so the same constructor is landed repeatedly and this table
+          contains exact duplicate rows. Deduplicated in silver.
+        columns:
+          - name: CONSTRUCTOR_ID
+            description: Ergast constructor slug, e.g. 'red_bull'. Natural key.
+            data_type: VARCHAR
+            data_tests:
+              - not_null
+          - name: NAME
+            description: Constructor display name, e.g. 'Red Bull'.
+            data_type: VARCHAR
+          - name: NATIONALITY
+            description: Constructor nationality, e.g. 'Austrian'.
+            data_type: VARCHAR
+
+      - name: RAW_DRIVERS
+        description: >
+          One row per driver per API pull. Like RAW_CONSTRUCTORS, the API is
+          queried per season, so a driver who competed in several seasons is
+          landed once per season and this table contains duplicate
+          DRIVER_IDs. Deduplicated in slv_f1__drivers.
+        columns:
+          - name: DRIVER_ID
+            description: Ergast driver slug, e.g. 'max_verstappen'. Natural key.
+            data_type: VARCHAR
+            data_tests:
+              - not_null
+          - name: PERMANENT_NUMBER
+            description: >
+              Driver's permanent car number. Not unique across the dataset
+              because retired numbers get reassigned.
+            data_type: NUMBER
+          - name: DRIVER_CODE
+            description: Three-letter broadcast abbreviation, e.g. 'VER'.
+            data_type: VARCHAR
+          - name: GIVEN_NAME
+            description: Driver first name.
+            data_type: VARCHAR
+          - name: FAMILY_NAME
+            description: Driver surname.
+            data_type: VARCHAR
+          - name: DATE_OF_BIRTH
+            description: Driver date of birth.
+            data_type: DATE
+          - name: NATIONALITY
+            description: Driver nationality, e.g. 'Dutch'.
+            data_type: VARCHAR
+
+      - name: RAW_RACES
+        description: One row per race, keyed by SEASON and ROUND.
+        columns:
+          - name: SEASON
+            description: Championship season (calendar year).
+            data_type: NUMBER
+            data_tests:
+              - not_null
+          - name: ROUND
+            description: Round number within the season, starting at 1.
+            data_type: NUMBER
+            data_tests:
+              - not_null
+          - name: RACE_NAME
+            description: Official Grand Prix name.
+            data_type: VARCHAR
+          - name: CIRCUIT_ID
+            description: FK to RAW_CIRCUITS.CIRCUIT_ID.
+            data_type: VARCHAR
+          - name: RACE_DATE
+            description: Local race date.
+            data_type: DATE
+          - name: RACE_TIME
+            description: Race start time as a UTC string, e.g. '15:00:00Z'.
+            data_type: VARCHAR
+          - name: RACE_TIMESTAMP_UTC
+            description: Race start timestamp in UTC.
+            data_type: TIMESTAMP_NTZ
+          - name: RACE_URL
+            description: Wikipedia URL for the race.
+            data_type: VARCHAR
+
+      - name: RAW_QUALIFYING
+        description: >
+          One row per driver per qualifying session. Q2 and Q3 times are blank
+          for drivers eliminated in the preceding segment.
+        columns:
+          - name: SEASON
+            description: Championship season.
+            data_type: NUMBER
+            data_tests:
+              - not_null
+          - name: ROUND
+            description: Round number within the season.
+            data_type: NUMBER
+            data_tests:
+              - not_null
+          - name: DRIVER_ID
+            description: FK to RAW_DRIVERS.DRIVER_ID.
+            data_type: VARCHAR
+            data_tests:
+              - not_null
+          - name: CONSTRUCTOR_ID
+            description: FK to RAW_CONSTRUCTORS.CONSTRUCTOR_ID.
+            data_type: VARCHAR
+          - name: POSITION
+            description: Final qualifying classification, 1 = pole position.
+            data_type: NUMBER
+          - name: Q1_TIME_STR
+            description: Q1 lap time as 'M:SS.sss'. Blank if no time set.
+            data_type: VARCHAR
+          - name: Q2_TIME_STR
+            description: Q2 lap time as 'M:SS.sss'. Blank if eliminated in Q1.
+            data_type: VARCHAR
+          - name: Q3_TIME_STR
+            description: Q3 lap time as 'M:SS.sss'. Blank if eliminated in Q2.
+            data_type: VARCHAR
+
+      - name: RAW_RESULTS
+        description: >
+          One row per driver per race result, including classification,
+          points, and fastest-lap detail.
+        columns:
+          - name: SEASON
+            description: Championship season.
+            data_type: NUMBER
+            data_tests:
+              - not_null
+          - name: ROUND
+            description: Round number within the season.
+            data_type: NUMBER
+            data_tests:
+              - not_null
+          - name: DRIVER_ID
+            description: FK to RAW_DRIVERS.DRIVER_ID.
+            data_type: VARCHAR
+            data_tests:
+              - not_null
+          - name: CONSTRUCTOR_ID
+            description: FK to RAW_CONSTRUCTORS.CONSTRUCTOR_ID.
+            data_type: VARCHAR
+          - name: GRID_POSITION
+            description: Starting grid slot. 0 indicates a pit-lane start.
+            data_type: NUMBER
+          - name: FINISH_POSITION
+            description: Final classified position.
+            data_type: NUMBER
+          - name: POSITION_TEXT
+            description: >
+              Ergast position text. Numeric for classified finishers, or a
+              code such as 'R' (retired), 'D' (disqualified), 'W' (withdrew).
+            data_type: VARCHAR
+          - name: POINTS_SCORED
+            description: Championship points awarded for this result.
+            data_type: NUMBER
+          - name: LAPS_COMPLETED
+            description: Number of laps completed.
+            data_type: NUMBER
+          - name: STATUS
+            description: >
+              Finishing status, e.g. 'Finished', '+1 Lap', 'Power Unit',
+              'Fuel pressure'.
+            data_type: VARCHAR
+          - name: RACE_TIME_MILLIS
+            description: >
+              Total race time in milliseconds. NULL for drivers who did not
+              finish.
+            data_type: NUMBER
+          - name: FASTEST_LAP_RANK
+            description: Rank of this driver's fastest lap within the race.
+            data_type: NUMBER
+          - name: FASTEST_LAP_TIME_STR
+            description: Fastest lap time as 'M:SS.sss'.
+            data_type: VARCHAR

@@ -1,16 +1,9 @@
-
-# Name your project! Project names should contain only lowercase characters
-# and underscores. A good package name should reflect your organization's
-# name or the intended use of these models
 name: 'fast_track'
 version: '1.0.0'
+config-version: 2
 
-# This setting configures which "profile" dbt uses for this project.
 profile: 'fast_track'
 
-# These configurations specify where dbt should look for different types of files.
-# The `model-paths` config, for example, states that models in this project can be
-# found in the "models/" directory. You probably won't need to change these!
 model-paths: ["models"]
 analysis-paths: ["analyses"]
 test-paths: ["tests"]
@@ -18,19 +11,68 @@ seed-paths: ["seeds"]
 macro-paths: ["macros"]
 snapshot-paths: ["snapshots"]
 
-clean-targets:         # directories to be removed by `dbt clean`
+target-path: "target"
+clean-targets:
   - "target"
   - "dbt_packages"
 
+# ---------------------------------------------------------------------------
+# Pipeline context
+# ---------------------------------------------------------------------------
+# Ergast-style F1 JSON is pulled from the API and landed in S3, exploded to
+# parquet by a Glue/Spark job, then COPY INTO-ed to F1_CAPSTONE.RAW. dbt owns
+# everything from RAW onward:
+#
+#   RAW (landed)  ->  staging  ->  silver  ->  mart
+#                                     |
+#                                     +-> snapshots (SCD Type 2, optional)
+#
+#   staging   : 1:1 with RAW. Select and rename only - no casting, no
+#               cleaning, no business logic. Duplicates are preserved. Views.
+#   silver    : typed, cleaned, deduplicated, conformed business entities.
+#               This is where casting and data-quality logic lives. Tables.
+#   snapshots : SCD Type 2 history of slv_f1__drivers/constructors attributes.
+#               Not read by any fact - a standalone "browse history" layer.
+#   mart      : dimensional model for consumption - conformed dimensions,
+#               transaction facts, periodic-snapshot facts, and aggregated
+#               metrics. Tables.
+# ---------------------------------------------------------------------------
 
-# Configuring models
-# Full documentation: https://docs.getdbt.com/docs/configuring-models
-
-# In this example config, we tell dbt to build all models in the example/
-# directory as views. These settings can be overridden in the individual model
-# files using the `{{ config(...) }}` macro.
 models:
   fast_track:
-    # Config indicated by + and applies to all files under models/example/
-    example:
-      +materialized: view
+    +schema: F1_PIPELINE
+
+    staging:
+      f1-formula_one:
+        +materialized: view
+        +tags: ["staging", "f1"]
+
+    silver:
+      f1-formula_one:
+        +materialized: table
+        +tags: ["silver", "f1"]
+
+    mart:
+      +materialized: table
+      +schema: marts
+      +tags: ["mart", "f1"]
+
+snapshots:
+  fast_track:
+    +schema: snapshots
+    +tags: ["scd2_snapshot", "scd_type_2", "f1"]
+
+
+flags:
+  indirect_selection: cautious
+
+vars:
+  # Points awarded for a race win. Used by the standings snapshot tests to
+  # assert that cumulative points are at least consistent with wins counted.
+  f1_points_for_win: 25
+
+  # How deep the championship countback compares finishing positions. The FIA
+  # rule runs through the entire field; 24 covers every modern grid with room
+  # to spare, and ties that survive 24 positions of race countback plus 24 of
+  # qualifying countback are genuine dead heats.
+  f1_countback_max_position: 24

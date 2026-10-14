@@ -28,3 +28,17 @@ config/
 plugins/
 
 profiles.yml
+
+
+
+#dbt
+target/
+dbt_packages/
+logs/
+dbt/fast_track/.user.yml
+*.pyc
+dbt_internal_packages/
+
+
+
+snowflake_schema_build/

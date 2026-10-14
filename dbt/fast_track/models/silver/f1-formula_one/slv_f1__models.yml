@@ -1,0 +1,584 @@
+version: 2
+
+models:
+  - name: slv_f1__circuits
+    description: >
+      Typed, cleaned, conformed circuit entity. One row per CIRCUIT_ID.
+      Applies casting and trimming, and nulls coordinates outside valid
+      latitude/longitude bounds so bad points are never plotted downstream.
+    config:
+      materialized: table
+      tags: ["silver", "f1", "circuit"]
+      alias: "SLV_F1__CIRCUITS"
+    columns:
+      - name: CIRCUIT_KEY
+        description: Surrogate key over (CIRCUIT_ID) via circuit_sk().
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CIRCUIT_ID
+        description: Ergast circuit slug. Natural key.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CIRCUIT_NAME
+        description: Full circuit name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: LOCALITY
+        description: City or locality hosting the circuit.
+        data_type: VARCHAR
+      - name: COUNTRY
+        description: Country hosting the circuit.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: LATITUDE
+        description: Circuit latitude in decimal degrees, or NULL if invalid.
+        data_type: FLOAT
+      - name: LONGITUDE
+        description: Circuit longitude in decimal degrees, or NULL if invalid.
+        data_type: FLOAT
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+
+  - name: slv_f1__constructors
+    description: >
+      Typed, cleaned, conformed constructor entity. One row per
+      CONSTRUCTOR_ID. Applies casting and trimming, and resolves the
+      duplicate rows present in RAW_CONSTRUCTORS, where the API lands a
+      constructor once per season it competed in.
+    config:
+      materialized: table
+      tags: ["silver", "f1", "constructor"]
+      alias: "SLV_F1__CONSTRUCTORS"
+    columns:
+      - name: CONSTRUCTOR_KEY
+        description: Surrogate key over (CONSTRUCTOR_ID) via constructor_sk().
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CONSTRUCTOR_ID
+        description: Ergast constructor slug. Natural key, unique after dedup.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CONSTRUCTOR_NAME
+        description: Constructor display name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_NATIONALITY
+        description: Constructor nationality.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+
+  - name: slv_f1__drivers
+    description: >
+      Typed, cleaned, conformed driver entity. One row per DRIVER_ID, with a
+      single canonical DRIVER_FULL_NAME for all downstream consumers. Applies
+      casting and trimming, and resolves the duplicate rows in RAW_DRIVERS,
+      where the API lands a driver once per season they competed in.
+    config:
+      materialized: table
+      tags: ["silver", "f1", "driver"]
+      alias: "SLV_F1__DRIVERS"
+    columns:
+      - name: DRIVER_KEY
+        description: Surrogate key over (DRIVER_ID) via driver_sk().
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: DRIVER_ID
+        description: Ergast driver slug. Natural key.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: DRIVER_CODE
+        description: Three-letter broadcast abbreviation, e.g. 'VER'.
+        data_type: VARCHAR
+      - name: GIVEN_NAME
+        description: Driver first name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: FAMILY_NAME
+        description: Driver surname.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_FULL_NAME
+        description: GIVEN_NAME and FAMILY_NAME joined with a single space.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: DRIVER_NATIONALITY
+        description: >
+          Driver nationality. NULL for reserve and FP1-only drivers, whom the
+          API lists without biographical detail.
+        data_type: VARCHAR
+        data_tests:
+          - not_null:
+              arguments: {}
+              config:
+                severity: warn
+      - name: PERMANENT_NUMBER
+        description: >
+          Driver's permanent car number. Not unique - retired numbers are
+          reassigned, so two drivers can legitimately share one.
+        data_type: NUMBER
+      - name: DATE_OF_BIRTH
+        description: >
+          Driver date of birth. NULL for reserve and FP1-only drivers, whom
+          the API lists without biographical detail.
+        data_type: DATE
+        data_tests:
+          - not_null:
+              arguments: {}
+              config:
+                severity: warn
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+
+  - name: slv_f1__races
+    description: >
+      Typed, cleaned, conformed race entity. Grain is SEASON + ROUND. Applies
+      casting, assigns RACE_KEY, and resolves CIRCUIT_KEY so downstream
+      models never re-derive the circuit surrogate key.
+    config:
+      materialized: table
+      tags: ["silver", "f1", "race"]
+      alias: "SLV_F1__RACES"
+    columns:
+      - name: RACE_KEY
+        description: Surrogate key over (SEASON, ROUND) via race_sk().
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: CIRCUIT_KEY
+        description: FK to slv_f1__circuits.CIRCUIT_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_f1__circuits')
+                field: CIRCUIT_KEY
+      - name: SEASON
+        description: Championship season (calendar year).
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round number within the season, starting at 1.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 30
+      - name: CIRCUIT_ID
+        description: Natural key of the circuit hosting the race.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: RACE_NAME
+        description: Official Grand Prix name.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: RACE_TIME
+        description: Race start time as a UTC string, e.g. '15:00:00Z'.
+        data_type: VARCHAR
+      - name: RACE_URL
+        description: Wikipedia URL for the race.
+        data_type: VARCHAR
+      - name: RACE_DATE
+        description: Local race date.
+        data_type: DATE
+        data_tests:
+          - not_null
+      - name: RACE_STARTED_AT
+        description: Race start timestamp in UTC.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+
+  - name: slv_f1__results
+    description: >
+      Typed, cleaned race-result entity. Grain is SEASON + ROUND + DRIVER_ID.
+      Applies casting, classifies finishers from POSITION_TEXT, normalises
+      pit-lane starts, converts the fastest-lap string to seconds, and groups
+      raw status strings into reportable retirement categories.
+    config:
+      materialized: table
+      tags: ["silver", "f1", "result"]
+      alias: "SLV_F1__RESULTS"
+    columns:
+      - name: RACE_RESULT_KEY
+        description: >
+          Surrogate key over (SEASON, ROUND, DRIVER_ID) via race_result_sk().
+          Protects the grain of the entity.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: RACE_KEY
+        description: FK to slv_f1__races.RACE_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_f1__races')
+                field: RACE_KEY
+      - name: DRIVER_KEY
+        description: FK to slv_f1__drivers.DRIVER_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_f1__drivers')
+                field: DRIVER_KEY
+      - name: CONSTRUCTOR_KEY
+        description: FK to slv_f1__constructors.CONSTRUCTOR_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_f1__constructors')
+                field: CONSTRUCTOR_KEY
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round number within the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: Natural key of the driver.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_ID
+        description: Natural key of the constructor the driver raced for.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: POSITION_TEXT
+        description: >
+          Ergast position text. Numeric for classified finishers, letter code
+          otherwise.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: STATUS
+        description: Raw finishing status from the API.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: FINISH_STATUS_CATEGORY
+        description: >
+          Reportable grouping of STATUS. Protects dashboards from the long
+          tail of raw mechanical-failure strings.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - FINISHED
+                  - LAPPED
+                  - DISQUALIFIED
+                  - ACCIDENT
+                  - MECHANICAL_OR_OTHER
+      - name: STARTING_GRID_POSITION
+        description: >
+          Starting grid slot, or NULL for a pit-lane start (raw grid 0).
+        data_type: NUMBER
+      - name: FINISH_POSITION
+        description: >
+          Raw final position as supplied by the API. Populated even for
+          unclassified drivers - use CLASSIFIED_POSITION for podium and win
+          logic.
+        data_type: NUMBER
+      - name: CLASSIFIED_POSITION
+        description: >
+          FINISH_POSITION for classified finishers only, otherwise NULL.
+        data_type: NUMBER
+      - name: POINTS_SCORED
+        description: Championship points awarded for this result.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 50
+      - name: LAPS_COMPLETED
+        description: Number of laps completed.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 200
+      - name: RACE_TIME_MILLIS
+        description: Total race time in ms. NULL for drivers who did not finish.
+        data_type: NUMBER
+      - name: FASTEST_LAP_RANK
+        description: Rank of this driver's fastest lap within the race.
+        data_type: NUMBER
+      - name: FASTEST_LAP_TIME_SECONDS
+        description: Fastest lap converted from 'M:SS.sss' to seconds.
+        data_type: NUMBER
+      - name: POSITIONS_GAINED
+        description: >
+          STARTING_GRID_POSITION minus CLASSIFIED_POSITION. Positive means
+          places gained. NULL for pit-lane starts and unclassified drivers.
+        data_type: NUMBER
+      - name: IS_CLASSIFIED
+        description: True when POSITION_TEXT is numeric, i.e. a classified finish.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_PIT_LANE_START
+        description: True when the driver started from the pit lane (grid 0).
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_RACE_WINNER
+        description: True when the driver was classified first.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_PODIUM_FINISH
+        description: True when the driver was classified in the top three.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_POINTS_FINISH
+        description: True when the driver scored at least one point.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_FASTEST_LAP
+        description: True when the driver set the fastest lap of the race.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+              - DRIVER_ID
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "NOT (IS_RACE_WINNER AND NOT IS_CLASSIFIED)"
+          config:
+            alias: slv_f1__results_winner_must_be_classified
+
+  - name: slv_f1__qualifying
+    description: >
+      Typed, cleaned qualifying entity. Grain is SEASON + ROUND + DRIVER_ID.
+      Applies casting, converts the Q1/Q2/Q3 strings to seconds, records how
+      far each driver progressed, and derives the driver's best time across
+      all segments they ran.
+    config:
+      materialized: table
+      tags: ["silver", "f1", "qualifying"]
+      alias: "SLV_F1__QUALIFYING"
+    columns:
+      - name: QUALIFYING_KEY
+        description: >
+          Surrogate key over (SEASON, ROUND, DRIVER_ID) via qualifying_sk().
+          Protects the grain of the entity.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - unique
+      - name: RACE_KEY
+        description: FK to slv_f1__races.RACE_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_f1__races')
+                field: RACE_KEY
+      - name: DRIVER_KEY
+        description: FK to slv_f1__drivers.DRIVER_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_f1__drivers')
+                field: DRIVER_KEY
+      - name: CONSTRUCTOR_KEY
+        description: FK to slv_f1__constructors.CONSTRUCTOR_KEY.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('slv_f1__constructors')
+                field: CONSTRUCTOR_KEY
+      - name: SEASON
+        description: Championship season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: ROUND
+        description: Round number within the season.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: DRIVER_ID
+        description: Natural key of the driver.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: CONSTRUCTOR_ID
+        description: Natural key of the constructor the driver qualified for.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+      - name: FINAL_SEGMENT_REACHED
+        description: >
+          Furthest qualifying segment in which the driver set a time, or
+          'NO_TIME' when they set none at all.
+        data_type: VARCHAR
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Q1', 'Q2', 'Q3', 'NO_TIME']
+      - name: QUALIFYING_POSITION
+        description: Final qualifying classification, 1 = pole position.
+        data_type: NUMBER
+        data_tests:
+          - not_null
+      - name: Q1_TIME_SECONDS
+        description: Q1 lap time in seconds, NULL if no time set.
+        data_type: NUMBER
+      - name: Q2_TIME_SECONDS
+        description: Q2 lap time in seconds, NULL if eliminated in Q1.
+        data_type: NUMBER
+      - name: Q3_TIME_SECONDS
+        description: Q3 lap time in seconds, NULL if eliminated in Q2.
+        data_type: NUMBER
+      - name: BEST_QUALIFYING_TIME_SECONDS
+        description: >
+          Fastest time across all segments the driver ran, NULL when no time
+          was set.
+        data_type: NUMBER
+      - name: SEGMENTS_WITH_A_TIME
+        description: Count of qualifying segments in which a time was set (0-3).
+        data_type: NUMBER
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 3
+      - name: IS_POLE_POSITION
+        description: True when the driver qualified first.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_TOP_TEN_QUALIFIER
+        description: True when the driver qualified in the top ten.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: IS_NO_TIME_SET
+        description: True when the driver set no time in any segment.
+        data_type: BOOLEAN
+        data_tests:
+          - not_null
+      - name: DBT_LOADED_AT
+        description: Timestamp the dbt run that produced this row started.
+        data_type: TIMESTAMP_NTZ
+      - name: DBT_LOADED_BY
+        description: Snowflake user that executed the dbt run.
+        data_type: VARCHAR
+      - name: RUN_ID
+        description: dbt invocation id for lineage back to a specific run.
+        data_type: VARCHAR
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - SEASON
+              - ROUND
+              - DRIVER_ID
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: >
+              NOT (FINAL_SEGMENT_REACHED = 'Q3' AND Q3_TIME_SECONDS IS NULL)
+          config:
+            alias: slv_f1__qualifying_q3_segment_requires_q3_time

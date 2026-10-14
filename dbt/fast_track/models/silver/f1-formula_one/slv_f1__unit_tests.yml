@@ -1,0 +1,283 @@
+version: 2
+
+# =============================================================================
+# Unit tests for the silver F1 models
+# =============================================================================
+# Covers the deterministic transformation logic that is easiest to break and
+# hardest to spot in production data:
+#
+#   1x - slv_f1__constructors deduplication of the repeated RAW rows
+#   2x - slv_f1__results classification from POSITION_TEXT
+#   3x - slv_f1__results pit-lane start and positions-gained handling
+#   4x - slv_f1__results status categorisation
+#   5x - slv_f1__qualifying best-time selection across segments
+#   6x - slv_f1__qualifying segment-reached logic
+#
+# Run: dbt test --select "silver,test_type:unit"
+# =============================================================================
+
+unit_tests:
+
+  # ===========================================================================
+  # 1x - CONSTRUCTOR DEDUPLICATION
+  # ===========================================================================
+
+  - name: slv_f1__constructors_test_1_collapses_exact_duplicates
+    model: slv_f1__constructors
+    description: |
+      Case 1: RAW lands the same constructor once per season it competed in,
+      producing exact duplicate rows. The silver dimension must collapse them
+      to exactly one row per CONSTRUCTOR_ID.
+    given:
+      - input: ref('stg_f1__constructors')
+        rows:
+          - { CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_NAME: "Ferrari", CONSTRUCTOR_NATIONALITY: "Italian" }
+          - { CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_NAME: "Ferrari", CONSTRUCTOR_NATIONALITY: "Italian" }
+          - { CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_NAME: "Ferrari", CONSTRUCTOR_NATIONALITY: "Italian" }
+          - { CONSTRUCTOR_ID: "mclaren", CONSTRUCTOR_NAME: "McLaren", CONSTRUCTOR_NATIONALITY: "British" }
+    expect:
+      rows:
+        - { CONSTRUCTOR_ID: "ferrari", CONSTRUCTOR_NAME: "Ferrari", CONSTRUCTOR_NATIONALITY: "Italian" }
+        - { CONSTRUCTOR_ID: "mclaren", CONSTRUCTOR_NAME: "McLaren", CONSTRUCTOR_NATIONALITY: "British" }
+
+  - name: slv_f1__constructors_test_2_resolves_conflicting_names_deterministically
+    model: slv_f1__constructors
+    description: |
+      Case 2: when the same CONSTRUCTOR_ID arrives with differing names, the
+      alphabetically last name wins. This keeps repeated dbt runs byte-for-byte
+      stable instead of picking an arbitrary row.
+    given:
+      - input: ref('stg_f1__constructors')
+        rows:
+          - { CONSTRUCTOR_ID: "alpine", CONSTRUCTOR_NAME: "Alpine F1 Team", CONSTRUCTOR_NATIONALITY: "French" }
+          - { CONSTRUCTOR_ID: "alpine", CONSTRUCTOR_NAME: "Alpine", CONSTRUCTOR_NATIONALITY: "French" }
+    expect:
+      rows:
+        - { CONSTRUCTOR_ID: "alpine", CONSTRUCTOR_NAME: "Alpine F1 Team", CONSTRUCTOR_NATIONALITY: "French" }
+
+  # ===========================================================================
+  # 1x (cont.) - DRIVER DEDUPLICATION
+  # ===========================================================================
+
+  - name: slv_f1__drivers_test_2b_collapses_per_season_duplicates
+    model: slv_f1__drivers
+    description: |
+      Case 2b: RAW_DRIVERS lands a driver once per season they competed in,
+      so a multi-season driver arrives several times. The dimension must
+      collapse to one row per DRIVER_ID, and when PERMANENT_NUMBER differs
+      across seasons the highest wins - which in practice picks the most
+      recent entry. DBT_LOADED_AT cannot break this tie because it is
+      identical for every row in a run.
+    given:
+      - input: ref('stg_f1__drivers')
+        rows:
+          - {
+              DRIVER_ID: "max_verstappen", DRIVER_CODE: "VER", GIVEN_NAME: "Max",
+              FAMILY_NAME: "Verstappen", DRIVER_NATIONALITY: "Dutch",
+              PERMANENT_NUMBER: 33, DATE_OF_BIRTH: "1997-09-30"
+            }
+          - {
+              DRIVER_ID: "max_verstappen", DRIVER_CODE: "VER", GIVEN_NAME: "Max",
+              FAMILY_NAME: "Verstappen", DRIVER_NATIONALITY: "Dutch",
+              PERMANENT_NUMBER: 1, DATE_OF_BIRTH: "1997-09-30"
+            }
+          - {
+              DRIVER_ID: "norris", DRIVER_CODE: "NOR", GIVEN_NAME: "Lando",
+              FAMILY_NAME: "Norris", DRIVER_NATIONALITY: "British",
+              PERMANENT_NUMBER: 4, DATE_OF_BIRTH: "1999-11-13"
+            }
+    expect:
+      rows:
+        - {
+            DRIVER_ID: "max_verstappen", DRIVER_FULL_NAME: "Max Verstappen",
+            PERMANENT_NUMBER: 33, DRIVER_NATIONALITY: "Dutch"
+          }
+        - {
+            DRIVER_ID: "norris", DRIVER_FULL_NAME: "Lando Norris",
+            PERMANENT_NUMBER: 4, DRIVER_NATIONALITY: "British"
+          }
+
+  # ===========================================================================
+  # 2x - RESULT CLASSIFICATION FROM POSITION_TEXT
+  # ===========================================================================
+
+  - name: slv_f1__results_test_3_classification_follows_position_text
+    model: slv_f1__results
+    description: |
+      Case 3: IS_CLASSIFIED must be driven by POSITION_TEXT, not
+      FINISH_POSITION. The retired driver below still carries
+      FINISH_POSITION = 20, so deriving classification from FINISH_POSITION
+      would wrongly treat them as a classified finisher and would leak a
+      CLASSIFIED_POSITION into podium and win counts.
+    given:
+      - input: ref('stg_f1__results')
+        rows:
+          # classified winner
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "leclerc", CONSTRUCTOR_ID: "ferrari",
+              POSITION_TEXT: "1", STATUS: "Finished", FASTEST_LAP_TIME_STR: "1:34.570",
+              GRID_POSITION: 1, FINISH_POSITION: 1, POINTS_SCORED: 26,
+              LAPS_COMPLETED: 57, RACE_TIME_MILLIS: 5853584, FASTEST_LAP_RANK: 1,
+              DBT_LOADED_AT: "2024-01-01 00:00:00"
+            }
+          # retired - numeric FINISH_POSITION but letter POSITION_TEXT
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "gasly", CONSTRUCTOR_ID: "alphatauri",
+              POSITION_TEXT: "R", STATUS: "Power Unit", FASTEST_LAP_TIME_STR: "1:37.324",
+              GRID_POSITION: 10, FINISH_POSITION: 20, POINTS_SCORED: 0,
+              LAPS_COMPLETED: 44, RACE_TIME_MILLIS: null, FASTEST_LAP_RANK: 17,
+              DBT_LOADED_AT: "2024-01-01 00:00:00"
+            }
+    expect:
+      rows:
+        - {
+            DRIVER_ID: "leclerc", IS_CLASSIFIED: true, CLASSIFIED_POSITION: 1,
+            IS_RACE_WINNER: true, IS_PODIUM_FINISH: true, IS_POINTS_FINISH: true,
+            IS_FASTEST_LAP: true, FINISH_STATUS_CATEGORY: "FINISHED"
+          }
+        - {
+            DRIVER_ID: "gasly", IS_CLASSIFIED: false, CLASSIFIED_POSITION: null,
+            IS_RACE_WINNER: false, IS_PODIUM_FINISH: false, IS_POINTS_FINISH: false,
+            IS_FASTEST_LAP: false, FINISH_STATUS_CATEGORY: "MECHANICAL_OR_OTHER"
+          }
+
+  # ===========================================================================
+  # 3x - PIT-LANE STARTS AND POSITIONS GAINED
+  # ===========================================================================
+
+  - name: slv_f1__results_test_4_pit_lane_start_nulls_grid_and_gain
+    model: slv_f1__results
+    description: |
+      Case 4: a raw GRID_POSITION of 0 means a pit-lane start, not pole.
+      It must become NULL so POSITIONS_GAINED does not report a nonsensical
+      "gained -5 places from grid 0". A normal grid slot still computes a
+      real gain.
+    given:
+      - input: ref('stg_f1__results')
+        rows:
+          - {
+              SEASON: 2022, ROUND: 2, DRIVER_ID: "hamilton", CONSTRUCTOR_ID: "mercedes",
+              POSITION_TEXT: "5", STATUS: "Finished", FASTEST_LAP_TIME_STR: "1:36.228",
+              GRID_POSITION: 0, FINISH_POSITION: 5, POINTS_SCORED: 10,
+              LAPS_COMPLETED: 57, RACE_TIME_MILLIS: 5863259, FASTEST_LAP_RANK: 5,
+              DBT_LOADED_AT: "2024-01-01 00:00:00"
+            }
+          - {
+              SEASON: 2022, ROUND: 2, DRIVER_ID: "tsunoda", CONSTRUCTOR_ID: "alphatauri",
+              POSITION_TEXT: "8", STATUS: "Finished", FASTEST_LAP_TIME_STR: "1:37.104",
+              GRID_POSITION: 16, FINISH_POSITION: 8, POINTS_SCORED: 4,
+              LAPS_COMPLETED: 57, RACE_TIME_MILLIS: 5873970, FASTEST_LAP_RANK: 13,
+              DBT_LOADED_AT: "2024-01-01 00:00:00"
+            }
+    expect:
+      rows:
+        - {
+            DRIVER_ID: "hamilton", IS_PIT_LANE_START: true,
+            STARTING_GRID_POSITION: null, POSITIONS_GAINED: null
+          }
+        - {
+            DRIVER_ID: "tsunoda", IS_PIT_LANE_START: false,
+            STARTING_GRID_POSITION: 16, POSITIONS_GAINED: 8
+          }
+
+  # ===========================================================================
+  # 4x - STATUS CATEGORISATION
+  # ===========================================================================
+
+  - name: slv_f1__results_test_5_status_categories
+    model: slv_f1__results
+    description: |
+      Case 5: the long tail of raw STATUS strings must collapse into the five
+      reportable categories so dashboards stay stable when the API introduces
+      a new failure description.
+    given:
+      - input: ref('stg_f1__results')
+        rows:
+          - { SEASON: 2022, ROUND: 3, DRIVER_ID: "d1", CONSTRUCTOR_ID: "c1", POSITION_TEXT: "1", STATUS: "Finished",      FASTEST_LAP_TIME_STR: null, GRID_POSITION: 1, FINISH_POSITION: 1, POINTS_SCORED: 25, LAPS_COMPLETED: 50, RACE_TIME_MILLIS: 1, FASTEST_LAP_RANK: null, DBT_LOADED_AT: "2024-01-01 00:00:00" }
+          - { SEASON: 2022, ROUND: 3, DRIVER_ID: "d2", CONSTRUCTOR_ID: "c1", POSITION_TEXT: "12", STATUS: "+1 Lap",        FASTEST_LAP_TIME_STR: null, GRID_POSITION: 2, FINISH_POSITION: 12, POINTS_SCORED: 0, LAPS_COMPLETED: 49, RACE_TIME_MILLIS: null, FASTEST_LAP_RANK: null, DBT_LOADED_AT: "2024-01-01 00:00:00" }
+          - { SEASON: 2022, ROUND: 3, DRIVER_ID: "d3", CONSTRUCTOR_ID: "c2", POSITION_TEXT: "D", STATUS: "Disqualified",  FASTEST_LAP_TIME_STR: null, GRID_POSITION: 3, FINISH_POSITION: 20, POINTS_SCORED: 0, LAPS_COMPLETED: 50, RACE_TIME_MILLIS: null, FASTEST_LAP_RANK: null, DBT_LOADED_AT: "2024-01-01 00:00:00" }
+          - { SEASON: 2022, ROUND: 3, DRIVER_ID: "d4", CONSTRUCTOR_ID: "c2", POSITION_TEXT: "R", STATUS: "Collision",     FASTEST_LAP_TIME_STR: null, GRID_POSITION: 4, FINISH_POSITION: 18, POINTS_SCORED: 0, LAPS_COMPLETED: 10, RACE_TIME_MILLIS: null, FASTEST_LAP_RANK: null, DBT_LOADED_AT: "2024-01-01 00:00:00" }
+          - { SEASON: 2022, ROUND: 3, DRIVER_ID: "d5", CONSTRUCTOR_ID: "c3", POSITION_TEXT: "R", STATUS: "Fuel pressure", FASTEST_LAP_TIME_STR: null, GRID_POSITION: 5, FINISH_POSITION: 19, POINTS_SCORED: 0, LAPS_COMPLETED: 30, RACE_TIME_MILLIS: null, FASTEST_LAP_RANK: null, DBT_LOADED_AT: "2024-01-01 00:00:00" }
+    expect:
+      rows:
+        - { DRIVER_ID: "d1", FINISH_STATUS_CATEGORY: "FINISHED" }
+        - { DRIVER_ID: "d2", FINISH_STATUS_CATEGORY: "LAPPED" }
+        - { DRIVER_ID: "d3", FINISH_STATUS_CATEGORY: "DISQUALIFIED" }
+        - { DRIVER_ID: "d4", FINISH_STATUS_CATEGORY: "ACCIDENT" }
+        - { DRIVER_ID: "d5", FINISH_STATUS_CATEGORY: "MECHANICAL_OR_OTHER" }
+
+  # ===========================================================================
+  # 5x / 6x - QUALIFYING TIME CONVERSION AND BEST-TIME SELECTION
+  # ===========================================================================
+
+  - name: slv_f1__qualifying_test_6_best_time_ignores_missing_segments
+    model: slv_f1__qualifying
+    description: |
+      Case 6: BEST_QUALIFYING_TIME_SECONDS must be the fastest time across the
+      segments a driver actually ran. A plain LEAST() would collapse to NULL
+      as soon as one segment is NULL, so the sentinel pattern is what this
+      test protects. Covers a Q3 runner, a Q1 casualty, and a driver who set
+      no time at all.
+    given:
+      - input: ref('stg_f1__qualifying')
+        rows:
+          # progressed to Q3, fastest lap came in Q3
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "leclerc", CONSTRUCTOR_ID: "ferrari",
+              Q1_TIME_STR: "1:31.471", Q2_TIME_STR: "1:30.932", Q3_TIME_STR: "1:30.558",
+              QUALIFYING_POSITION: 1, DBT_LOADED_AT: "2024-01-01 00:00:00"
+            }
+          # eliminated in Q1 - only a Q1 time exists
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "latifi", CONSTRUCTOR_ID: "williams",
+              Q1_TIME_STR: "1:33.634", Q2_TIME_STR: null, Q3_TIME_STR: null,
+              QUALIFYING_POSITION: 20, DBT_LOADED_AT: "2024-01-01 00:00:00"
+            }
+          # no time set in any segment
+          - {
+              SEASON: 2022, ROUND: 1, DRIVER_ID: "stroll", CONSTRUCTOR_ID: "aston_martin",
+              Q1_TIME_STR: null, Q2_TIME_STR: null, Q3_TIME_STR: null,
+              QUALIFYING_POSITION: 19, DBT_LOADED_AT: "2024-01-01 00:00:00"
+            }
+    expect:
+      rows:
+        - {
+            DRIVER_ID: "leclerc", Q1_TIME_SECONDS: 91.471, Q2_TIME_SECONDS: 90.932,
+            Q3_TIME_SECONDS: 90.558, BEST_QUALIFYING_TIME_SECONDS: 90.558,
+            FINAL_SEGMENT_REACHED: "Q3", SEGMENTS_WITH_A_TIME: 3,
+            IS_POLE_POSITION: true, IS_TOP_TEN_QUALIFIER: true, IS_NO_TIME_SET: false
+          }
+        - {
+            DRIVER_ID: "latifi", Q1_TIME_SECONDS: 93.634, Q2_TIME_SECONDS: null,
+            Q3_TIME_SECONDS: null, BEST_QUALIFYING_TIME_SECONDS: 93.634,
+            FINAL_SEGMENT_REACHED: "Q1", SEGMENTS_WITH_A_TIME: 1,
+            IS_POLE_POSITION: false, IS_TOP_TEN_QUALIFIER: false, IS_NO_TIME_SET: false
+          }
+        - {
+            DRIVER_ID: "stroll", Q1_TIME_SECONDS: null, Q2_TIME_SECONDS: null,
+            Q3_TIME_SECONDS: null, BEST_QUALIFYING_TIME_SECONDS: null,
+            FINAL_SEGMENT_REACHED: "NO_TIME", SEGMENTS_WITH_A_TIME: 0,
+            IS_POLE_POSITION: false, IS_TOP_TEN_QUALIFIER: false, IS_NO_TIME_SET: true
+          }
+
+  - name: slv_f1__qualifying_test_7_malformed_time_string_degrades_to_null
+    model: slv_f1__qualifying
+    description: |
+      Case 7: a lap-time string without the ':' separator must degrade to NULL
+      rather than raise a cast error, so one bad API value cannot fail the
+      whole build.
+    given:
+      - input: ref('stg_f1__qualifying')
+        rows:
+          - {
+              SEASON: 2022, ROUND: 4, DRIVER_ID: "norris", CONSTRUCTOR_ID: "mclaren",
+              Q1_TIME_STR: "no time", Q2_TIME_STR: "1:30.000", Q3_TIME_STR: null,
+              QUALIFYING_POSITION: 11, DBT_LOADED_AT: "2024-01-01 00:00:00"
+            }
+    expect:
+      rows:
+        - {
+            DRIVER_ID: "norris", Q1_TIME_SECONDS: null, Q2_TIME_SECONDS: 90.000,
+            BEST_QUALIFYING_TIME_SECONDS: 90.000, FINAL_SEGMENT_REACHED: "Q2",
+            SEGMENTS_WITH_A_TIME: 1
+          }
